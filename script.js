@@ -870,27 +870,16 @@ function clearAllData() {
 }
 
 // --- UI / TABS ---
-function openMenu() {
-    const magContainer = document.querySelector('.mag-container');
-    const sideMenu = document.getElementById('sideMenu');
-    magContainer.classList.remove('rise');
-    magContainer.classList.add('drop');
-    sideMenu.classList.add('open');
-}
-
-function closeMenu() {
-    const magContainer = document.querySelector('.mag-container');
-    const sideMenu = document.getElementById('sideMenu');
-    sideMenu.classList.remove('open');
-    magContainer.classList.remove('drop');
-    magContainer.classList.add('rise');
-}
-
 function switchTab(tabName) {
     const tabs = document.querySelectorAll('.tab-content');
     tabs.forEach(tab => tab.classList.remove('active'));
     document.getElementById('tab-' + tabName).classList.add('active');
-    closeMenu();
+    
+    // Update bottom nav active state
+    document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+    let navItem = document.getElementById('nav-' + tabName);
+    if(navItem) navItem.classList.add('active');
+    
     if (tabName === 'overview') loadOverview();
 }
 
