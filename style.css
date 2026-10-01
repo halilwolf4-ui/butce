@@ -501,6 +501,7 @@ input:checked + .theme-slider:before {
 .tx-item {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     font-size: 13px;
     color: var(--text-muted);
     padding: 6px 4px;
@@ -510,6 +511,68 @@ input:checked + .theme-slider:before {
 .tx-amount {
     font-weight: 700;
     color: #fff;
+    white-space: nowrap;
+}
+
+/* COMPACT EDITOR STYLES */
+.compact-card {
+    padding: 14px !important;
+    margin-bottom: 14px !important;
+    border-radius: 16px !important;
+}
+.compact-input-group {
+    margin-bottom: 10px !important;
+    padding: 10px !important;
+    border-radius: 12px !important;
+}
+.compact-input-group:last-child { margin-bottom: 0 !important; }
+
+.tx-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    background: rgba(30, 144, 255, 0.2);
+    color: var(--accent-blue);
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 5px;
+    cursor: pointer;
+    margin-right: 5px;
+    transition: background 0.2s;
+}
+.tx-badge:hover {
+    background: rgba(30, 144, 255, 0.4);
+}
+
+.tx-collapsible {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    background: rgba(0,0,0,0.15);
+    border-radius: 8px;
+    margin-top: 0;
+}
+.tx-collapsible.open {
+    max-height: 500px;
+    margin-top: 8px;
+    padding: 6px;
+}
+.tx-collapsible .tx-item {
+    font-size: 12px;
+    padding: 4px 6px;
+}
+
+body.light-theme .tx-badge {
+    background: rgba(30, 144, 255, 0.15);
+}
+body.light-theme .tx-collapsible {
+    background: rgba(0,0,0,0.03);
+}
+body.light-theme .tx-collapsible.open {
+    background: rgba(0,0,0,0.03);
 }
 
 /* MODAL */
@@ -832,23 +895,14 @@ body.light-theme .btn-text:hover {
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    width: 22px;
+    width: 2px;
     height: 22px;
-    background: var(--bg-color);
-    border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.2);
-    color: var(--text-main);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    font-size: 10px;
-    font-weight: 800;
+    background: var(--text-muted);
     z-index: 10;
     transition: all 0.3s;
 }
 body.light-theme .x-axis-center-mark {
-    background: #fff;
-    border-color: rgba(0,0,0,0.1);
+    background: var(--text-muted);
 }
 
 .x-axis-tooltip {
@@ -861,8 +915,6 @@ body.light-theme .x-axis-center-mark {
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
     z-index: 100;
     width: 220px;
-    max-height: 200px;
-    overflow-y: auto;
     opacity: 0;
     pointer-events: none;
     transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);

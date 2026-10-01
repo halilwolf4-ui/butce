@@ -138,7 +138,7 @@ function loadOverview() {
                     m.categories.forEach(cat => {
                         cat.items.forEach(item => {
                             if (item.amount > 0) {
-                                let label = cat.isDebtCategory ? "Borç: " + cat.name : item.name;
+                                let label = cat.name;
                                 globalExpenseBreakdown[label] = (globalExpenseBreakdown[label] || 0) + item.amount;
                                 
                                 if (!cat.isDebtCategory && !cat.isRecurringCategory) {
@@ -246,7 +246,9 @@ function renderXAxis(income, expense) {
     expDiv.innerHTML = '';
 }
 
-function toggleXAxis(type) {
+function toggleXAxis(type, event) {
+    if (event) event.stopPropagation();
+    
     const tooltip = document.getElementById('xAxisTooltip');
     if (!tooltip) return;
     
@@ -279,6 +281,18 @@ function toggleXAxis(type) {
     
     tooltip.innerHTML = html;
 }
+
+['click', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, function(e) {
+        const tooltip = document.getElementById('xAxisTooltip');
+        if (tooltip && currentTooltip) {
+            if (!e.target.closest('#xAxisBar') && !e.target.closest('.x-axis-tooltip')) {
+                tooltip.classList.remove('visible');
+                currentTooltip = null;
+            }
+        }
+    });
+});
 
 // --- MONTH INITIALIZATION ---
 function getLatestMonthTemplate(data) {
@@ -701,14 +715,14 @@ function calculateTotals() {
 
     document.getElementById('totalIncomeDisplay').innerText = formatMoney(totalIncome);
     document.getElementById('totalExpenseDisplay').innerText = formatMoney(totalExpense);
-    document.getElementById('remainingDisplay').innerText = formatMoney(remaining);
-
-    const summaryBox = document.getElementById('summaryBox');
+    
+    const remainEl = document.getElementById('remainingDisplay');
     if (remaining < 0) {
-        summaryBox.classList.add('negative');
-        document.getElementById('remainingDisplay').innerText = formatMoney(remaining) + " (Açık!)";
+        remainEl.innerText = formatMoney(remaining);
+        remainEl.style.color = 'var(--accent-red)';
     } else {
-        summaryBox.classList.remove('negative');
+        remainEl.innerText = formatMoney(remaining);
+        remainEl.style.color = 'var(--accent-green)';
     }
 }
 
@@ -753,26 +767,30 @@ function renderEditor() {
     currentMonth.incomes.forEach((inc, index) => {
         let isPermanent = !!inc.linkedRecurringId;
         
-        let quickBtn = isPermanent ? `<button class="btn-primary" style="padding:4px 10px; font-size:12px; margin-right:5px; background:var(--accent-green);" onclick="quickPay('income', ${index})">💰 ${formatMoney(inc.targetAmount)} Al</button>` : '';
+        let quickBtn = isPermanent ? `<button class="btn-primary" style="padding:3px 8px; font-size:11px; margin-right:4px; background:var(--accent-green);" onclick="quickPay('income', ${index})">💰 ${formatMoney(inc.targetAmount)} Al</button>` : '';
         
-        let nameInput = isPermanent ? `<span style="font-weight:700; color:var(--accent-green); margin-right:10px;">${inc.name}</span>` : `<input type="text" class="editable-title" list="income-suggestions" value="${inc.name}" onchange="updateIncomeName(${index}, this.value)">`;
+        let nameInput = isPermanent ? `<span style="font-weight:700; color:var(--accent-green); font-size:14px;">${inc.name}</span>` : `<input type="text" class="editable-title" list="income-suggestions" value="${inc.name}" onchange="updateIncomeName(${index}, this.value)" style="font-size:14px;">`;
         
-        let deleteBtn = isPermanent ? '' : `<button class="btn-icon danger" style="margin-left:5px;" onclick="deleteIncome(${index})">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        let deleteBtn = isPermanent ? '' : `<button class="btn-icon danger" style="margin-left:4px; width:26px; height:26px;" onclick="deleteIncome(${index})">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>`;
 
+        let txCount = inc.transactions ? inc.transactions.length : 0;
+        let txBadge = txCount > 0 ? `<span class="tx-badge" onclick="toggleTxList('inc-tx-${index}')" title="İşlemleri göster/gizle">${txCount}</span>` : '';
+
         incContainer.innerHTML += `
-            <div class="card" style="margin-bottom:15px; padding:15px; ${isPermanent ? 'border:1px solid rgba(46, 213, 115, 0.3);' : ''}">
+            <div class="card compact-card" style="${isPermanent ? 'border:1px solid rgba(46, 213, 115, 0.3);' : ''}">
                 <div class="input-header">
                     ${nameInput}
                     <div class="actions-wrap">
                         ${quickBtn}
-                        <span class="item-total" style="color:var(--accent-green); margin-right:10px;">${formatMoney(inc.amount)}</span>
-                        ${isPermanent ? '' : `<button class="btn-icon primary" style="margin-left:5px;" onclick="openTransactionModal('income', ${index}, null)">+</button>`}
+                        ${txBadge}
+                        <span class="item-total" style="color:var(--accent-green);">${formatMoney(inc.amount)}</span>
+                        ${isPermanent ? '' : `<button class="btn-icon primary" style="margin-left:4px; width:26px; height:26px;" onclick="openTransactionModal('income', ${index}, null)">+</button>`}
                         ${deleteBtn}
                     </div>
                 </div>
-                ${renderTransactionsDetailed(inc.transactions, 'income', index, null)}
+                <div class="tx-collapsible" id="inc-tx-${index}">${renderTransactionsCompact(inc.transactions, 'income', index, null)}</div>
             </div>
         `;
     });
@@ -783,6 +801,7 @@ function renderEditor() {
         let itemsHtml = '';
         let isDebtCat = cat.isDebtCategory;
         let isRecurringCat = cat.isRecurringCategory;
+        let catTotal = 0;
 
         cat.items.forEach((item, itemIndex) => {
             let isPermanent = !!item.linkedRecurringId;
@@ -790,81 +809,104 @@ function renderEditor() {
             let lockIcon = isLocked ? '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>' 
                                     : '<rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 9.9-1"></path>'; 
             
+            catTotal += item.amount;
+            
             let sliderHtml = (isDebtCat || isPermanent) ? '' : `
-                <div class="slider-container" style="display: ${isLocked ? 'none' : 'block'}; margin-top: 15px;">
+                <div class="slider-container" style="display: ${isLocked ? 'none' : 'block'}; margin-top: 8px;">
                     <input type="range" class="styled-slider" min="0" max="50000" step="50" value="${item.amount}" oninput="document.getElementById('amount-display-${catIndex}-${itemIndex}').innerText = formatMoney(this.value)" onchange="sliderChanged(${catIndex}, ${itemIndex}, this.value)">
                 </div>
             `;
             
-            let nameInput = (isDebtCat || isPermanent) ? `<span style="font-weight:700; color:var(--accent-blue);">${item.name}</span>` : `<input type="text" class="editable-title" list="category-suggestions" style="font-size:15px; font-weight:400;" value="${item.name}" onchange="updateItemName(${catIndex}, ${itemIndex}, this.value)">`;
+            let nameInput = (isDebtCat || isPermanent) ? `<span style="font-weight:600; color:var(--accent-blue); font-size:13px;">${item.name}</span>` : `<input type="text" class="editable-title" list="category-suggestions" style="font-size:13px; font-weight:400;" value="${item.name}" onchange="updateItemName(${catIndex}, ${itemIndex}, this.value)">`;
 
-            let quickBtn = (isPermanent) ? `<button class="btn-primary" style="padding:4px 10px; font-size:12px; margin-right:5px; background:var(--accent-red);" onclick="quickPay('expense', ${catIndex}, ${itemIndex})">💸 ${formatMoney(item.targetAmount)} Öde</button>` : '';
+            let quickBtn = (isPermanent) ? `<button class="btn-primary" style="padding:3px 8px; font-size:11px; margin-right:4px; background:var(--accent-red);" onclick="quickPay('expense', ${catIndex}, ${itemIndex})">💸 ${formatMoney(item.targetAmount)} Öde</button>` : '';
 
             let toolsHtml = '';
             if(!isDebtCat && !isPermanent) {
                 toolsHtml = `
-                    <button class="btn-icon primary" style="margin-left:5px;" title="Parça parça ekle" onclick="openTransactionModal('expense', ${catIndex}, ${itemIndex})">+</button>
-                    <button class="btn-icon" style="margin-left:5px;" title="${isLocked ? 'Kilidi aç' : 'Kilitle'}" onclick="toggleSliderLock(${catIndex}, ${itemIndex})">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${lockIcon}</svg>
+                    <button class="btn-icon primary" style="margin-left:3px; width:24px; height:24px;" title="Parça parça ekle" onclick="openTransactionModal('expense', ${catIndex}, ${itemIndex})">+</button>
+                    <button class="btn-icon" style="margin-left:3px; width:24px; height:24px;" title="${isLocked ? 'Kilidi aç' : 'Kilitle'}" onclick="toggleSliderLock(${catIndex}, ${itemIndex})">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${lockIcon}</svg>
                     </button>
-                    <button class="btn-icon danger" style="margin-left:5px;" onclick="deleteItem(${catIndex}, ${itemIndex})">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    <button class="btn-icon danger" style="margin-left:3px; width:24px; height:24px;" onclick="deleteItem(${catIndex}, ${itemIndex})">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                     </button>
                 `;
             }
 
+            let txCount = item.transactions ? item.transactions.length : 0;
+            let txBadge = txCount > 0 ? `<span class="tx-badge" onclick="toggleTxList('cat-tx-${catIndex}-${itemIndex}')" title="İşlemleri göster/gizle">${txCount}</span>` : '';
+
             itemsHtml += `
-                <div class="input-group">
+                <div class="input-group compact-input-group">
                     <div class="input-header">
                         ${nameInput}
                         <div class="actions-wrap">
                             ${quickBtn}
-                            <span class="item-total" id="amount-display-${catIndex}-${itemIndex}" style="margin-right:10px;">${formatMoney(item.amount)}</span>
+                            ${txBadge}
+                            <span class="item-total" id="amount-display-${catIndex}-${itemIndex}">${formatMoney(item.amount)}</span>
                             ${toolsHtml}
                         </div>
                     </div>
                     ${sliderHtml}
-                    ${renderTransactionsDetailed(item.transactions, 'expense', catIndex, itemIndex)}
+                    <div class="tx-collapsible" id="cat-tx-${catIndex}-${itemIndex}">${renderTransactionsCompact(item.transactions, 'expense', catIndex, itemIndex)}</div>
                 </div>
             `;
         });
         
-        let catTitleHtml = (isDebtCat || isRecurringCat) ? `<span style="font-weight:800; font-size:16px; color:var(--accent-blue)">${cat.name}</span>` : `<input type="text" class="editable-cat-title" list="category-suggestions" value="${cat.name}" onchange="updateCategoryName(${catIndex}, this.value)">`;
+        let catTitleHtml = (isDebtCat || isRecurringCat) ? `<span style="font-weight:800; font-size:14px; color:var(--accent-blue)">${cat.name}</span>` : `<input type="text" class="editable-cat-title" list="category-suggestions" value="${cat.name}" onchange="updateCategoryName(${catIndex}, this.value)" style="font-size:14px;">`;
         
-        let deleteBtn = (isDebtCat || isRecurringCat) ? '' : `<button class="btn-icon danger" style="background:transparent; border:none; margin-bottom:10px;" onclick="deleteCategory(${catIndex})">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+        let catTotalHtml = `<span style="font-size:12px; color:var(--accent-red); font-weight:700; margin-right:5px;">${formatMoney(catTotal)}</span>`;
+        
+        let deleteBtn = (isDebtCat || isRecurringCat) ? '' : `<button class="btn-icon danger" style="background:transparent; border:none; width:26px; height:26px;" onclick="deleteCategory(${catIndex})">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                     </button>`;
-        let addItemBtn = (isDebtCat || isRecurringCat) ? '' : `<button class="btn-text" onclick="addItem(${catIndex})" style="color:var(--text-muted); margin-top:10px;">+ Yeni Kalem</button>`;
+        let addItemBtn = (isDebtCat || isRecurringCat) ? '' : `<button class="btn-text" onclick="addItem(${catIndex})" style="color:var(--text-muted); margin-top:5px; font-size:13px;">+ Yeni Kalem</button>`;
 
         catContainer.innerHTML += `
-            <div class="card" ${(isDebtCat || isRecurringCat) ? 'style="border-color:rgba(52, 152, 219, 0.3);"' : ''}>
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+            <div class="card compact-card" ${(isDebtCat || isRecurringCat) ? 'style="border-color:rgba(52, 152, 219, 0.3);"' : ''}>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                     ${catTitleHtml}
-                    ${deleteBtn}
+                    <div style="display:flex; align-items:center;">
+                        ${catTotalHtml}
+                        ${deleteBtn}
+                    </div>
                 </div>
                 ${itemsHtml}
                 ${addItemBtn}
             </div>
         `;
     });
+    
+    if(typeof renderMonthlyChart === 'function') {
+        renderMonthlyChart();
+    }
 }
 
-function renderTransactionsDetailed(transactions, type, catIndex, itemIndex) {
+function toggleTxList(id) {
+    const el = document.getElementById(id);
+    if(el) el.classList.toggle('open');
+}
+
+function renderTransactionsCompact(transactions, type, catIndex, itemIndex) {
     if (!transactions || transactions.length === 0) return '';
-    let html = `<div class="transaction-list show">`;
+    let html = '';
     transactions.forEach((tx, idx) => {
         let sign = tx.amount > 0 ? '+' : '';
+        let desc = tx.desc || 'İşlem';
+        desc = desc.replace(/Ä°ÅŸlem/g, 'İşlem').replace(/KalÄ±cÄ±/g, 'Kalıcı').replace(/SÃ¼rgÃ¼/g, 'Sürgü').replace(/Ã–deme/g, 'Ödeme');
         html += `
             <div class="tx-item">
-                <span>${tx.date} - ${tx.desc || 'İşlem'}</span>
+                <span>${tx.date} - ${desc}</span>
                 <div style="display:flex; align-items:center;">
-                    <span class="tx-amount" style="margin-right:10px;">${sign}${formatMoney(tx.amount)}</span>
-                    <button class="btn-icon danger" style="padding:2px; background:transparent;" title="İşlemi Sil" onclick="deleteTransaction('${type}', ${catIndex}, ${itemIndex}, '${tx.id}')">✖</button>
+                    <span class="tx-amount" style="margin-right:8px;">${sign}${formatMoney(tx.amount)}</span>
+                    <button class="btn-icon danger" style="width:22px; height:22px; min-width:22px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:50%;" title="İşlemi Sil" onclick="deleteTransaction('${type}', ${catIndex}, ${itemIndex}, '${tx.id}')">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
                 </div>
             </div>
         `;
     });
-    html += `</div>`;
     return html;
 }
 
@@ -1157,4 +1199,118 @@ function handleDragEnd(e) {
     
     if (diff > 50 && currentSlide < 1) goToSlide(currentSlide + 1);
     else if (diff < -50 && currentSlide > 0) goToSlide(currentSlide - 1);
+}
+
+let monthlyChartInstance = null;
+let currentChartType = 'line';
+
+function switchChart(type) {
+    currentChartType = type;
+    document.getElementById('btnChartLine').style.borderColor = type === 'line' ? 'var(--accent-blue)' : 'rgba(255,255,255,0.1)';
+    document.getElementById('btnChartPie').style.borderColor = type === 'pie' ? 'var(--accent-blue)' : 'rgba(255,255,255,0.1)';
+    renderMonthlyChart();
+}
+
+function renderMonthlyChart() {
+    if (!currentMonth) return;
+    const canvas = document.getElementById('monthlyChartCanvas');
+    if (!canvas) return;
+    
+    let ctx = canvas.getContext('2d');
+    
+    if (monthlyChartInstance) {
+        monthlyChartInstance.destroy();
+    }
+    
+    const isLight = document.body.classList.contains('light-theme');
+    const tickColor = isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)';
+    const gridColor = isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.05)';
+    const legendColor = isLight ? '#333' : '#fff';
+    
+    if (currentChartType === 'line') {
+        let dailyTotals = {};
+        let parts = currentMonth.id.split('-');
+        let year = parseInt(parts[0]);
+        let month = parseInt(parts[1]);
+        let daysInMonth = new Date(year, month, 0).getDate();
+        
+        for(let i=1; i<=daysInMonth; i++) dailyTotals[i] = 0;
+        
+        currentMonth.categories.forEach(cat => {
+            if (cat.isRecurringCategory) return;
+            cat.items.forEach(item => {
+                if(item.transactions) {
+                    item.transactions.forEach(tx => {
+                        if(tx.amount > 0 && tx.date) {
+                            let day = parseInt(tx.date.split('/')[0]);
+                            if(dailyTotals[day] !== undefined) {
+                                dailyTotals[day] += tx.amount;
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        
+        let labels = Object.keys(dailyTotals);
+        let data = Object.values(dailyTotals);
+        
+        monthlyChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Günlük Harcama (₺)',
+                    data: data,
+                    borderColor: '#1e90ff',
+                    backgroundColor: 'rgba(30, 144, 255, 0.1)',
+                    borderWidth: 2,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: { ticks: { color: tickColor, maxTicksLimit: 10 }, grid: { display: false } },
+                    y: { ticks: { color: tickColor }, grid: { color: gridColor } }
+                }
+            }
+        });
+        
+    } else {
+        let catTotals = {};
+        currentMonth.categories.forEach(cat => {
+            let sum = 0;
+            cat.items.forEach(item => sum += item.amount);
+            if(sum > 0) catTotals[cat.name] = sum;
+        });
+        
+        let labels = Object.keys(catTotals);
+        let data = Object.values(catTotals);
+        
+        monthlyChartInstance = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: ['#ff4757', '#1e90ff', '#2ed573', '#ffa502', '#3742fa', '#ff7f50', '#2f3542'],
+                    borderWidth: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'right', labels: { color: legendColor, boxWidth: 12, font: { size: 10 } } }
+                }
+            }
+        });
+    }
 }
