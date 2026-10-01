@@ -10,13 +10,15 @@ const TR_MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temm
 const TR_MONTHS_SHORT = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
 
 // --- STATE ---
+let currentUser = localStorage.getItem('budgetApp_currentUser') || null;
 let currentMonth = null;
 let transactionContext = null;
 let selectedYear = new Date().getFullYear();
 
 // --- LOCAL STORAGE ---
 function getSavedData() {
-    const data = localStorage.getItem('budgetApp_data');
+    if (!currentUser) return { months: [], settings: { cycleStartDay: 1 }, debts: [], recurring: [] };
+    const data = localStorage.getItem('budgetApp_data_' + currentUser);
     let parsed = { months: [], settings: { cycleStartDay: 1 }, debts: [], recurring: [] };
     if (data) {
         let d = JSON.parse(data);
@@ -28,7 +30,8 @@ function getSavedData() {
     return parsed;
 }
 function setSavedData(data) {
-    localStorage.setItem('budgetApp_data', JSON.stringify(data));
+    if (!currentUser) return;
+    localStorage.setItem('budgetApp_data_' + currentUser, JSON.stringify(data));
 }
 
 // --- SETTINGS ---
@@ -60,10 +63,47 @@ function changeYear(delta) {
     loadOverview();
 }
 
+let xAxisExpanded = false;
+let globalIncomeBreakdown = {};
+let globalExpenseBreakdown = {};
+
+function updateAutocompleteSuggestions() {
+    const data = getSavedData();
+    const months = data.months || [];
+    
+    let incomesSet = new Set();
+    let categoriesSet = new Set();
+
+    months.forEach(m => {
+        if(m.incomes) {
+            m.incomes.forEach(inc => incomesSet.add(inc.name));
+        }
+        if(m.categories) {
+            m.categories.forEach(cat => {
+                categoriesSet.add(cat.name);
+                cat.items.forEach(item => categoriesSet.add(item.name));
+            });
+        }
+    });
+
+    const incDatalist = document.getElementById('income-suggestions');
+    if(incDatalist) {
+        incDatalist.innerHTML = Array.from(incomesSet).map(name => `<option value="${name}">`).join('');
+    }
+    const catDatalist = document.getElementById('category-suggestions');
+    if(catDatalist) {
+        catDatalist.innerHTML = Array.from(categoriesSet).map(name => `<option value="${name}">`).join('');
+    }
+}
+
 function loadOverview() {
+    updateAutocompleteSuggestions();
+
     document.getElementById('currentYearDisplay').innerText = selectedYear;
-    document.getElementById('yearLabel').innerText = selectedYear;
-    document.getElementById('topYearLabel').innerText = selectedYear;
+    const yearLabelEl = document.getElementById('yearLabel');
+    if(yearLabelEl) yearLabelEl.innerText = selectedYear;
+    const topYearLabelEl = document.getElementById('topYearLabel');
+    if(topYearLabelEl) topYearLabelEl.innerText = selectedYear;
     const data = getSavedData();
     const months = data.months || [];
     
@@ -73,6 +113,9 @@ function loadOverview() {
     let totalAccumulated = 0;
     let annualIncome = 0;
     let annualExpense = 0;
+    
+    globalIncomeBreakdown = {};
+    globalExpenseBreakdown = {};
     const categoryTotals = {};
 
     months.forEach(m => {
@@ -82,11 +125,25 @@ function loadOverview() {
             if (m.id.startsWith(selectedYear + '-')) {
                 annualIncome += m.income || 0;
                 annualExpense += m.expense || 0;
+                
+                if (m.incomes) {
+                    m.incomes.forEach(inc => {
+                        if (inc.amount > 0) {
+                            globalIncomeBreakdown[inc.name] = (globalIncomeBreakdown[inc.name] || 0) + inc.amount;
+                        }
+                    });
+                }
+                
                 if (m.categories) {
                     m.categories.forEach(cat => {
                         cat.items.forEach(item => {
-                            if (item.amount > 0 && !cat.isDebtCategory && !cat.isRecurringCategory) {
-                                categoryTotals[item.name] = (categoryTotals[item.name] || 0) + item.amount;
+                            if (item.amount > 0) {
+                                let label = cat.isDebtCategory ? "Borç: " + cat.name : item.name;
+                                globalExpenseBreakdown[label] = (globalExpenseBreakdown[label] || 0) + item.amount;
+                                
+                                if (!cat.isDebtCategory && !cat.isRecurringCategory) {
+                                    categoryTotals[item.name] = (categoryTotals[item.name] || 0) + item.amount;
+                                }
                             }
                         });
                     });
@@ -95,9 +152,12 @@ function loadOverview() {
         }
     });
 
-    document.getElementById('totalAccumulatedDisplay').innerText = formatMoney(totalAccumulated);
-    document.getElementById('annualIncomeDisplay').innerText = formatMoney(annualIncome);
-    document.getElementById('annualExpenseDisplay').innerText = formatMoney(annualExpense);
+    const accumulatedDisplay = document.getElementById('totalAccumulatedDisplay');
+    if(accumulatedDisplay) accumulatedDisplay.innerText = formatMoney(totalAccumulated);
+    const incDisplay = document.getElementById('annualIncomeDisplay');
+    if(incDisplay) incDisplay.innerText = formatMoney(annualIncome);
+    const expDisplay = document.getElementById('annualExpenseDisplay');
+    if(expDisplay) expDisplay.innerText = formatMoney(annualExpense);
     
     let totalGlobalDebt = data.debts.reduce((acc, d) => acc + d.remainingAmount, 0);
     document.getElementById('globalDebtDisplay').innerText = formatMoney(totalGlobalDebt);
@@ -114,6 +174,8 @@ function loadOverview() {
         });
     }
     document.getElementById('topCategoriesList').innerHTML = catsHtml;
+    
+    renderXAxis(annualIncome, annualExpense);
 
     const listContainer = document.getElementById('monthsList');
     listContainer.innerHTML = '';
@@ -153,6 +215,69 @@ function loadOverview() {
         }
         listContainer.appendChild(card);
     }
+}
+
+let currentTooltip = null;
+
+function renderXAxis(income, expense) {
+    const incDiv = document.getElementById('xAxisIncome');
+    const expDiv = document.getElementById('xAxisExpense');
+    if(!incDiv || !expDiv) return;
+    
+    let total = income + expense;
+    if (total === 0) {
+        incDiv.style.width = '50%';
+        expDiv.style.width = '50%';
+        incDiv.innerHTML = '';
+        expDiv.innerHTML = '';
+        return;
+    }
+    
+    let incPct = (income / total) * 100;
+    let expPct = (expense / total) * 100;
+    
+    if (incPct > 95) { incPct = 95; expPct = 5; }
+    if (expPct > 95) { expPct = 95; incPct = 5; }
+    
+    incDiv.style.width = incPct + '%';
+    expDiv.style.width = expPct + '%';
+    
+    incDiv.innerHTML = '';
+    expDiv.innerHTML = '';
+}
+
+function toggleXAxis(type) {
+    const tooltip = document.getElementById('xAxisTooltip');
+    if (!tooltip) return;
+    
+    if (currentTooltip === type) {
+        tooltip.classList.remove('visible');
+        currentTooltip = null;
+        return;
+    }
+    
+    currentTooltip = type;
+    tooltip.className = 'x-axis-tooltip visible ' + (type === 'income' ? 'income-pos' : 'expense-pos');
+    
+    const data = type === 'income' ? globalIncomeBreakdown : globalExpenseBreakdown;
+    const items = Object.entries(data).filter(e => e[1] > 0).sort((a,b) => b[1] - a[1]);
+    const total = items.reduce((acc, curr) => acc + curr[1], 0);
+    
+    if (items.length === 0) {
+        tooltip.innerHTML = '<div style="text-align:center;color:var(--text-muted);font-size:12px;">Veri yok</div>';
+        return;
+    }
+    
+    let html = '';
+    items.forEach(e => {
+        let pct = Math.round((e[1] / total) * 100);
+        html += `<div class="x-axis-tooltip-item">
+            <span>${e[0]}</span>
+            <span class="x-axis-tooltip-pct ${type === 'income' ? 'inc' : 'exp'}">%${pct}</span>
+        </div>`;
+    });
+    
+    tooltip.innerHTML = html;
 }
 
 // --- MONTH INITIALIZATION ---
@@ -630,7 +755,7 @@ function renderEditor() {
         
         let quickBtn = isPermanent ? `<button class="btn-primary" style="padding:4px 10px; font-size:12px; margin-right:5px; background:var(--accent-green);" onclick="quickPay('income', ${index})">💰 ${formatMoney(inc.targetAmount)} Al</button>` : '';
         
-        let nameInput = isPermanent ? `<span style="font-weight:700; color:var(--accent-green); margin-right:10px;">${inc.name}</span>` : `<input type="text" class="editable-title" value="${inc.name}" onchange="updateIncomeName(${index}, this.value)">`;
+        let nameInput = isPermanent ? `<span style="font-weight:700; color:var(--accent-green); margin-right:10px;">${inc.name}</span>` : `<input type="text" class="editable-title" list="income-suggestions" value="${inc.name}" onchange="updateIncomeName(${index}, this.value)">`;
         
         let deleteBtn = isPermanent ? '' : `<button class="btn-icon danger" style="margin-left:5px;" onclick="deleteIncome(${index})">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
@@ -671,7 +796,7 @@ function renderEditor() {
                 </div>
             `;
             
-            let nameInput = (isDebtCat || isPermanent) ? `<span style="font-weight:700; color:var(--accent-blue);">${item.name}</span>` : `<input type="text" class="editable-title" style="font-size:15px; font-weight:400;" value="${item.name}" onchange="updateItemName(${catIndex}, ${itemIndex}, this.value)">`;
+            let nameInput = (isDebtCat || isPermanent) ? `<span style="font-weight:700; color:var(--accent-blue);">${item.name}</span>` : `<input type="text" class="editable-title" list="category-suggestions" style="font-size:15px; font-weight:400;" value="${item.name}" onchange="updateItemName(${catIndex}, ${itemIndex}, this.value)">`;
 
             let quickBtn = (isPermanent) ? `<button class="btn-primary" style="padding:4px 10px; font-size:12px; margin-right:5px; background:var(--accent-red);" onclick="quickPay('expense', ${catIndex}, ${itemIndex})">💸 ${formatMoney(item.targetAmount)} Öde</button>` : '';
 
@@ -704,7 +829,7 @@ function renderEditor() {
             `;
         });
         
-        let catTitleHtml = (isDebtCat || isRecurringCat) ? `<span style="font-weight:800; font-size:16px; color:var(--accent-blue)">${cat.name}</span>` : `<input type="text" class="editable-cat-title" value="${cat.name}" onchange="updateCategoryName(${catIndex}, this.value)">`;
+        let catTitleHtml = (isDebtCat || isRecurringCat) ? `<span style="font-weight:800; font-size:16px; color:var(--accent-blue)">${cat.name}</span>` : `<input type="text" class="editable-cat-title" list="category-suggestions" value="${cat.name}" onchange="updateCategoryName(${catIndex}, this.value)">`;
         
         let deleteBtn = (isDebtCat || isRecurringCat) ? '' : `<button class="btn-icon danger" style="background:transparent; border:none; margin-bottom:10px;" onclick="deleteCategory(${catIndex})">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
@@ -862,13 +987,16 @@ function saveMonth() {
 }
 
 function clearAllData() {
-    if(confirm("Tüm kayıtlı bütçeler ve BÜTÜN BORÇLAR silinecek. Emin misiniz?")) {
-        localStorage.removeItem('budgetApp_data');
-        loadOverview();
-        alert("Tüm veriler temizlendi.");
+    if(confirm("Tüm kayıtlı bütçeler ve HESABINIZ SİLİNECEK. Emin misiniz?")) {
+        if(currentUser) {
+            localStorage.removeItem('budgetApp_data_' + currentUser);
+            let users = JSON.parse(localStorage.getItem('budgetApp_users') || '{}');
+            delete users[currentUser];
+            localStorage.setItem('budgetApp_users', JSON.stringify(users));
+            logout();
+        }
     }
 }
-
 // --- UI / TABS ---
 function switchTab(tabName) {
     const tabs = document.querySelectorAll('.tab-content');
@@ -884,13 +1012,124 @@ function switchTab(tabName) {
 }
 
 // Init
-switchTab('overview');
+const savedTheme = localStorage.getItem('budgetApp_theme');
+if (savedTheme === 'light') {
+    document.body.classList.add('light-theme');
+    const checkbox = document.getElementById('checkbox');
+    if (checkbox) checkbox.checked = true;
+}
+
+// --- AUTHENTICATION ---
+let isLoginMode = true;
+function toggleAuthMode() {
+    isLoginMode = !isLoginMode;
+    document.getElementById('auth-title').innerText = isLoginMode ? 'Giriş Yap' : 'Kayıt Ol';
+    document.getElementById('auth-submit-btn').innerText = isLoginMode ? 'Giriş Yap' : 'Hesap Oluştur';
+    document.getElementById('auth-toggle-btn').innerText = isLoginMode ? 'Hesabın yok mu? Kayıt Ol' : 'Zaten hesabın var mı? Giriş Yap';
+}
+
+function handleAuthSubmit() {
+    const user = document.getElementById('auth-username').value.trim();
+    const pass = document.getElementById('auth-password').value.trim();
+    if(!user || !pass) return alert("Kullanıcı adı ve şifre zorunludur.");
+    
+    let users = JSON.parse(localStorage.getItem('budgetApp_users') || '{}');
+    
+    if (isLoginMode) {
+        if (!users[user]) return alert("Kullanıcı bulunamadı.");
+        if (users[user].password !== btoa(pass)) return alert("Hatalı şifre.");
+        loginUser(user);
+    } else {
+        if (users[user]) return alert("Bu kullanıcı adı zaten alınmış.");
+        
+        users[user] = { password: btoa(pass) };
+        localStorage.setItem('budgetApp_users', JSON.stringify(users));
+        
+        let oldData = localStorage.getItem('budgetApp_data');
+        if (oldData && Object.keys(users).length === 1) {
+            if(confirm("Daha önceki şifresiz bütçe verilerinizi bu yeni hesaba aktarmak ister misiniz?")) {
+                localStorage.setItem('budgetApp_data_' + user, oldData);
+                localStorage.removeItem('budgetApp_data');
+            }
+        }
+        loginUser(user);
+    }
+}
+
+function loginUser(user) {
+    currentUser = user;
+    localStorage.setItem('budgetApp_currentUser', user);
+    document.getElementById('auth-screen').style.display = 'none';
+    switchTab('overview');
+}
+
+function logout() {
+    currentUser = null;
+    localStorage.removeItem('budgetApp_currentUser');
+    location.reload();
+}
+
+function checkAuthOnLoad() {
+    if (!currentUser) {
+        document.getElementById('auth-screen').style.display = 'flex';
+    } else {
+        document.getElementById('auth-screen').style.display = 'none';
+        switchTab('overview');
+    }
+}
+
+// --- BACKUP & RESTORE ---
+function downloadBackup() {
+    if(!currentUser) return;
+    const dataStr = localStorage.getItem('budgetApp_data_' + currentUser) || "{}";
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    const exportFileDefaultName = `Butce_Yedek_${currentUser}.json`;
+
+    let linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+}
+
+function uploadBackup(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            if(data.months !== undefined) {
+                localStorage.setItem('budgetApp_data_' + currentUser, JSON.stringify(data));
+                alert("Yedek başarıyla yüklendi!");
+                location.reload();
+            } else {
+                alert("Geçersiz yedek dosyası.");
+            }
+        } catch (err) {
+            alert("Dosya okunamadı.");
+        }
+    };
+    reader.readAsText(file);
+}
+
+checkAuthOnLoad();
+
+// --- THEME ---
+function toggleTheme(isLight) {
+    if (isLight) {
+        document.body.classList.add('light-theme');
+        localStorage.setItem('budgetApp_theme', 'light');
+    } else {
+        document.body.classList.remove('light-theme');
+        localStorage.setItem('budgetApp_theme', 'dark');
+    }
+}
 
 // --- CAROUSEL LOGIC ---
 let currentSlide = 0;
 function goToSlide(index) {
     currentSlide = index;
-    document.getElementById('carouselTrack').style.transform = `translateX(-${index * 33.333}%)`;
+    document.getElementById('carouselTrack').style.transform = `translateX(-${index * 50}%)`;
     const dots = document.querySelectorAll('.dot');
     dots.forEach((dot, i) => {
         if(i === index) dot.classList.add('active');
@@ -916,6 +1155,6 @@ function handleDragEnd(e) {
     let endX = e.type.includes('mouse') ? e.pageX : e.changedTouches[0].pageX;
     let diff = startX - endX;
     
-    if (diff > 50 && currentSlide < 2) goToSlide(currentSlide + 1);
+    if (diff > 50 && currentSlide < 1) goToSlide(currentSlide + 1);
     else if (diff < -50 && currentSlide > 0) goToSlide(currentSlide - 1);
 }
