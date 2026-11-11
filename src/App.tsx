@@ -1,927 +1,1282 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  AppData,
-  MonthData,
-  SavingsItem,
-  GoalJar,
-  TR_MONTHS,
-  generateId,
-  formatMoney
-} from './types';
-import {
-  loadUserData,
-  saveUserData,
-  getCurrentUser,
-  setCurrentUser,
-  syncRecurringToMonth,
-  createDefaultData
-} from './utils/storage';
-import { OverviewTab } from './components/OverviewTab';
-import { MonthEditorTab } from './components/MonthEditorTab';
-import { SavingsTab, AddSavingsModal, getDaysSinceUpdate } from './components/SavingsTab';
-import { SettingsTab } from './components/SettingsTab';
-import { BottomNav, TabType } from './components/BottomNav';
-import {
-  TransactionModal,
-  DebtManagerModal,
-  PayDebtModal,
-  RecurringManagerModal
-} from './components/Modals';
-import { AuthModal } from './components/AuthModal';
-import { QuickAddModal } from './components/QuickAddModal';
-import { BrandLogo } from './components/BrandLogo';
-import { Maximize2, Minimize2, CheckCircle2, AlertCircle, Plus } from 'lucide-react';
+import { db, initializeDatabase, deduplicateDatabaseWords, syncYokdilCategoriesToDb, DEFAULT_SETTINGS, DEFAULT_PROFILE, DEFAULT_CATEGORY_NAMES } from './db';
+import { Word, Progress, UserSettings, UserProfile, DailyLog } from './types';
+import { matchWordCandidate } from './utils/wordMatcher';
+import { selectDailyReviewQueue, selectDailyNewWordsQueue, decideReviewAnswer } from './services/srsEngine';
+import { getEffectiveDate, daysBetween, addDays } from './services/dateUtils';
+import { calculateLevel, getComboMultiplier, checkUnlockedBadges } from './services/gamification';
+import { sound } from './services/audio';
+import { setSpeechEnabled } from './services/speech';
+import { fireLevelUp } from './components/Confetti';
 
-export default function App() {
-  const [currentUser, setUser] = useState<string | null>(getCurrentUser());
-  const [data, setData] = useState<AppData>(() => loadUserData(currentUser || undefined));
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
-  const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
+import { Header } from './components/Header';
+import { Navbar, NavTab } from './components/Navbar';
+import { BackupReminderBanner } from './components/BackupReminderBanner';
+import { InstallPromptBanner } from './components/InstallPromptBanner';
 
-  // Light/Dark Theme
-  const [isLight, setIsLight] = useState<boolean>(() => {
-    return localStorage.getItem('budgetApp_theme') === 'light';
-  });
+import { HomeView } from './views/HomeView';
+import { LearnView } from './views/LearnView';
+import { ReviewView } from './views/ReviewView';
+import { WordListView } from './views/WordListView';
+import { StatsView } from './views/StatsView';
+import { SettingsView } from './views/SettingsView';
+import { SpeedRoundView } from './views/SpeedRoundView';
+import { PassaparolaView } from './views/PassaparolaView';
+import { SnakeGameView } from './views/SnakeGameView';
+import { ClozeTestView } from './views/ClozeTestView';
+import { YdsYokdilView } from './views/YdsYokdilView';
+import { SecretWordView } from './views/SecretWordView';
 
-  // Mobile Frame Toggle on Desktop
-  const [isFramed, setIsFramed] = useState<boolean>(true);
+export const App: React.FC = () => {
+  // Initialization state
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [initPercent, setInitPercent] = useState(0);
+  const [initMessage, setInitMessage] = useState('Veritabanı hazırlanıyor...');
 
-  // Active Month in Editor
-  const [currentMonth, setCurrentMonth] = useState<MonthData | null>(null);
+  // Core data states
+  const [allWords, setAllWords] = useState<Word[]>([]);
+  const [allProgress, setAllProgress] = useState<Progress[]>([]);
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
+  const [dailyLogs, setDailyLogs] = useState<DailyLog[]>([]);
+  const [categoryNames, setCategoryNames] = useState<Record<string, string>>(DEFAULT_CATEGORY_NAMES);
 
-  // Modals State
-  const [isDebtManagerOpen, setIsDebtManagerOpen] = useState(false);
-  const [isPayDebtOpen, setIsPayDebtOpen] = useState(false);
-  const [isRecurringOpen, setIsRecurringOpen] = useState(false);
-  const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [isAddSavingsOpen, setIsAddSavingsOpen] = useState(false);
-  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  // Navigation & overlays
+  const [currentTab, setCurrentTab] = useState<NavTab>('home');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSpeedRoundOpen, setIsSpeedRoundOpen] = useState(false);
+  const [isPassaparolaOpen, setIsPassaparolaOpen] = useState(false);
+  const [isSnakeGameOpen, setIsSnakeGameOpen] = useState(false);
+  const [isClozeTestOpen, setIsClozeTestOpen] = useState(false);
+  const [isYdsYokdilOpen, setIsYdsYokdilOpen] = useState(false);
+  const [isSecretWordOpen, setIsSecretWordOpen] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [ambiguousSelection, setAmbiguousSelection] = useState<{
+    wordData: Omit<Word, 'id'>;
+    candidates: Word[];
+    silent?: boolean;
+  } | null>(null);
 
-  // Transaction Modal State
-  const [txModal, setTxModal] = useState<{
-    isOpen: boolean;
-    type: 'income' | 'expense';
-    catIndex: number;
-    itemIndex: number | null;
-    itemName: string;
-  }>({
-    isOpen: false,
-    type: 'expense',
-    catIndex: 0,
-    itemIndex: null,
-    itemName: ''
-  });
-
-  // Toast notification
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
-
-  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => {
-      setToast(null);
-    }, 2800);
-  }, []);
-
-  // Update HTML Theme classes
+  // Keyboard awareness listener with debouncing to prevent frame drops
   useEffect(() => {
-    if (isLight) {
-      document.documentElement.classList.add('light-theme');
-      document.body.classList.remove('bg-[#090b10]', 'text-slate-100');
-      document.body.classList.add('bg-[#f3f6fa]', 'text-slate-900');
-      localStorage.setItem('budgetApp_theme', 'light');
-    } else {
-      document.documentElement.classList.remove('light-theme');
-      document.body.classList.remove('bg-[#f3f6fa]', 'text-slate-900');
-      document.body.classList.add('bg-[#090b10]', 'text-slate-100');
-      localStorage.setItem('budgetApp_theme', 'dark');
-    }
-  }, [isLight]);
+    let resizeTimer: any = null;
+    let focusTimer: any = null;
 
-  // Persist Data whenever it changes
-  const updateData = useCallback((newData: AppData) => {
-    setData(newData);
-    saveUserData(newData, currentUser || undefined);
-  }, [currentUser]);
-
-  // Extract distinct autocomplete suggestions across all months to prevent typos
-  const { allPreviousCategories, allPreviousIncomes, allPreviousItems } = useMemo(() => {
-    const catSet = new Set<string>();
-    const incSet = new Set<string>();
-    const itemSet = new Set<string>();
-
-    data.months.forEach(m => {
-      m.incomes?.forEach(i => {
-        if (i.name?.trim()) incSet.add(i.name.trim());
-      });
-      m.categories?.forEach(c => {
-        if (c.name?.trim()) catSet.add(c.name.trim());
-        c.items?.forEach(item => {
-          if (item.name?.trim()) itemSet.add(item.name.trim());
-        });
-      });
-    });
-
-    return {
-      allPreviousCategories: Array.from(catSet),
-      allPreviousIncomes: Array.from(incSet),
-      allPreviousItems: Array.from(itemSet)
-    };
-  }, [data.months]);
-
-  // Calculate total monthly cash buffer
-  const cashBuffer = useMemo(() => {
-    return data.months.reduce((sum, m) => sum + (m.remaining || 0), 0);
-  }, [data.months]);
-
-  // Check if Portfolio has any items not updated for 30+ days (1 month)
-  const hasOutdatedSavings = useMemo(() => {
-    if (!data.savings || data.savings.length === 0) return false;
-    return data.savings.some(item => getDaysSinceUpdate(item) >= 30);
-  }, [data.savings]);
-
-  // Initialize or open active month
-  const openMonth = useCallback((year: number, monthIdx: number) => {
-    const monthId = `${year}-${monthIdx}`;
-    const existing = data.months.find(m => m.id === monthId);
-
-    let target: MonthData;
-    if (existing) {
-      target = JSON.parse(JSON.stringify(existing));
-    } else {
-      // Find latest month to copy structure
-      const sorted = [...data.months].sort((a, b) => {
-        const [yA, mA] = a.id.split('-').map(Number);
-        const [yB, mB] = b.id.split('-').map(Number);
-        return yA !== yB ? yA - yB : mA - mB;
-      });
-      const template = sorted[sorted.length - 1];
-
-      if (template) {
-        target = JSON.parse(JSON.stringify(template));
-        target.id = monthId;
-        target.name = `${TR_MONTHS[monthIdx]} ${year}`;
-        target.monthIdx = monthIdx;
-        target.income = 0;
-        target.expense = 0;
-        target.remaining = 0;
-        target.incomes.forEach(inc => {
-          inc.amount = 0;
-          inc.transactions = [];
-        });
-        target.categories.forEach(cat => {
-          cat.items.forEach(item => {
-            item.amount = 0;
-            item.transactions = [];
-          });
-        });
-      } else {
-        target = {
-          id: monthId,
-          name: `${TR_MONTHS[monthIdx]} ${year}`,
-          monthIdx,
-          income: 0,
-          expense: 0,
-          remaining: 0,
-          incomes: [
-            {
-              id: generateId(),
-              name: 'Maaş',
-              amount: 0,
-              transactions: []
-            }
-          ],
-          categories: [
-            {
-              id: generateId(),
-              name: 'Ev ve Faturalar',
-              items: [
-                { id: generateId(), name: 'Faturalar', amount: 0, transactions: [], sliderLocked: true }
-              ]
-            },
-            {
-              id: generateId(),
-              name: 'Mutfak ve Yaşam',
-              items: [
-                { id: generateId(), name: 'Market', amount: 0, transactions: [], sliderLocked: false }
-              ]
-            }
-          ]
-        };
-      }
-    }
-
-    // Sync recurring items into month view
-    const synced = syncRecurringToMonth(target, data.recurring);
-    setCurrentMonth(synced);
-    setActiveTab('this-month');
-  }, [data.months, data.recurring]);
-
-  // Initial load default to current month
-  useEffect(() => {
-    if (!currentMonth) {
-      const today = new Date();
-      const yr = today.getFullYear();
-      const mIdx = today.getMonth();
-      const mId = `${yr}-${mIdx}`;
-      const found = data.months.find(m => m.id === mId);
-      if (found) {
-        setCurrentMonth(syncRecurringToMonth(found, data.recurring));
-      } else if (data.months.length > 0) {
-        setCurrentMonth(syncRecurringToMonth(data.months[data.months.length - 1], data.recurring));
-      } else {
-        openMonth(yr, mIdx);
-      }
-    }
-  }, [data.months, data.recurring, currentMonth, openMonth]);
-
-  // Save Month Handler
-  const handleSaveMonth = useCallback(() => {
-    if (!currentMonth) return;
-
-    let totInc = 0;
-    currentMonth.incomes.forEach(i => {
-      const sum = i.transactions ? i.transactions.reduce((acc, t) => acc + t.amount, 0) : 0;
-      i.amount = sum;
-      totInc += sum;
-    });
-
-    let totExp = 0;
-    currentMonth.categories.forEach(c => {
-      c.items.forEach(i => {
-        const sum = i.transactions ? i.transactions.reduce((acc, t) => acc + t.amount, 0) : 0;
-        i.amount = sum;
-        totExp += sum;
-      });
-    });
-
-    const updatedMonth: MonthData = {
-      ...currentMonth,
-      income: totInc,
-      expense: totExp,
-      remaining: totInc - totExp
-    };
-
-    const newMonths = [...data.months];
-    const existingIdx = newMonths.findIndex(m => m.id === updatedMonth.id);
-
-    if (existingIdx >= 0) {
-      newMonths[existingIdx] = updatedMonth;
-    } else {
-      newMonths.push(updatedMonth);
-    }
-
-    updateData({
-      ...data,
-      months: newMonths
-    });
-
-    setCurrentMonth(updatedMonth);
-    showToast(`"${updatedMonth.name}" bütçesi kaydedildi!`);
-    setActiveTab('overview');
-  }, [currentMonth, data, updateData, showToast]);
-
-  // Reset Month
-  const handleResetMonth = useCallback(() => {
-    if (!currentMonth) return;
-    const cleared: MonthData = {
-      ...currentMonth,
-      income: 0,
-      expense: 0,
-      remaining: 0,
-      incomes: currentMonth.incomes.map(i => ({ ...i, amount: 0, transactions: [] })),
-      categories: currentMonth.categories.map(c => ({
-        ...c,
-        items: c.items.map(item => ({ ...item, amount: 0, transactions: [] }))
-      }))
-    };
-    setCurrentMonth(cleared);
-    showToast('Ay sıfırlandı. Değişikliği kalıcı yapmak için "Kaydet"e basın.', 'info');
-  }, [currentMonth, showToast]);
-
-  // Restore Debt when deleting a debt payment transaction
-  const handleRestoreDebt = useCallback((debtId: string, amount: number) => {
-    const updatedDebts = data.debts.map(d => {
-      if (d.id === debtId) {
-        return {
-          ...d,
-          remainingAmount: Math.min(d.totalAmount, d.remainingAmount + amount)
-        };
-      }
-      return d;
-    });
-    updateData({
-      ...data,
-      debts: updatedDebts
-    });
-    showToast(`${formatMoney(amount)} tutarındaki borç bakiyesi geri yüklendi.`, 'info');
-  }, [data, updateData, showToast]);
-
-  // Add Debt
-  const handleAddDebt = useCallback((name: string, totalAmount: number, installments: number) => {
-    const instAmt = Math.ceil(totalAmount / installments);
-    const newDebt = {
-      id: generateId(),
-      name,
-      totalAmount,
-      remainingAmount: totalAmount,
-      installments,
-      installmentAmount: instAmt
-    };
-    updateData({
-      ...data,
-      debts: [...data.debts, newDebt]
-    });
-    showToast(`"${name}" borcu başarıyla eklendi!`);
-  }, [data, updateData, showToast]);
-
-  // Delete Debt
-  const handleDeleteDebt = useCallback((debtId: string) => {
-    updateData({
-      ...data,
-      debts: data.debts.filter(d => d.id !== debtId)
-    });
-    showToast('Borç kaydı silindi.');
-  }, [data, updateData, showToast]);
-
-  // Pay Debt Handler
-  const handleConfirmPayDebt = useCallback((debtId: string, amount: number) => {
-    if (!currentMonth) return;
-
-    const targetDebt = data.debts.find(d => d.id === debtId);
-    if (!targetDebt) return;
-
-    const actualPaid = Math.min(amount, targetDebt.remainingAmount);
-
-    // 1. Update remaining debt balance
-    const updatedDebts = data.debts.map(d => {
-      if (d.id === debtId) {
-        return {
-          ...d,
-          remainingAmount: Math.max(0, d.remainingAmount - actualPaid)
-        };
-      }
-      return d;
-    });
-
-    // 2. Ensure "Borç Ödemeleri" category exists in currentMonth
-    const updatedMonth = JSON.parse(JSON.stringify(currentMonth)) as MonthData;
-    let debtCat = updatedMonth.categories.find(c => c.isDebtCategory);
-    if (!debtCat) {
-      debtCat = {
-        id: generateId(),
-        name: 'Borç Ödemeleri',
-        isDebtCategory: true,
-        items: []
-      };
-      updatedMonth.categories.push(debtCat);
-    }
-
-    let debtItem = debtCat.items.find(i => i.linkedDebtId === debtId);
-    if (!debtItem) {
-      debtItem = {
-        id: generateId(),
-        linkedDebtId: debtId,
-        name: targetDebt.name,
-        amount: 0,
-        transactions: [],
-        sliderLocked: true
-      };
-      debtCat.items.push(debtItem);
-    }
-
-    const today = new Date();
-    debtItem.transactions = debtItem.transactions || [];
-    debtItem.transactions.push({
-      id: generateId(),
-      amount: actualPaid,
-      desc: 'Taksit Ödemesi',
-      date: `${today.getDate()}/${today.getMonth() + 1}`
-    });
-
-    setCurrentMonth(updatedMonth);
-    updateData({
-      ...data,
-      debts: updatedDebts
-    });
-
-    showToast(`${targetDebt.name} için ${formatMoney(actualPaid)} ödendi!`);
-  }, [currentMonth, data, updateData, showToast]);
-
-  // Add Recurring Item (with Subscription & Payment Day support)
-  const handleAddRecurring = useCallback((
-    type: 'income' | 'expense',
-    name: string,
-    amount: number,
-    paymentDay: number = 1,
-    isSubscription: boolean = false,
-    categoryTag?: string
-  ) => {
-    const newItem = {
-      id: generateId(),
-      type,
-      name,
-      amount,
-      paymentDay,
-      isSubscription,
-      categoryTag
-    };
-    const updatedRecurring = [...data.recurring, newItem];
-    const updatedData = { ...data, recurring: updatedRecurring };
-    updateData(updatedData);
-
-    if (currentMonth) {
-      setCurrentMonth(syncRecurringToMonth(currentMonth, updatedRecurring));
-    }
-    showToast(`"${name}" kalıcı işlemi / aboneliği eklendi.`);
-  }, [data, updateData, currentMonth, showToast]);
-
-  // Delete Recurring Item
-  const handleDeleteRecurring = useCallback((id: string) => {
-    const updatedRecurring = data.recurring.filter(r => r.id !== id);
-    const updatedData = { ...data, recurring: updatedRecurring };
-    updateData(updatedData);
-
-    if (currentMonth) {
-      setCurrentMonth(syncRecurringToMonth(currentMonth, updatedRecurring));
-    }
-    showToast('Kalıcı işlem silindi.');
-  }, [data, updateData, currentMonth, showToast]);
-
-  // Savings Handlers (USER REQUEST: Birikim yönetimi)
-  const handleUpdateSavings = useCallback((updatedSavings: SavingsItem[]) => {
-    const updated = {
-      ...data,
-      savings: updatedSavings
-    };
-    updateData(updated);
-    showToast('Birikim portföyü güncellendi.');
-  }, [data, updateData, showToast]);
-
-  const handleAddSavings = useCallback((item: Omit<SavingsItem, 'id'>) => {
-    const newItem: SavingsItem = {
-      ...item,
-      id: generateId()
-    };
-    const updatedSavings = [newItem, ...(data.savings || [])];
-    updateData({
-      ...data,
-      savings: updatedSavings
-    });
-    showToast(`"${item.name}" birikimi eklendi!`);
-  }, [data, updateData, showToast]);
-
-  // Goal Jars Handlers
-  const handleUpdateGoalJars = useCallback((updatedGoals: GoalJar[]) => {
-    const updated = {
-      ...data,
-      goalJars: updatedGoals
-    };
-    updateData(updated);
-    showToast('Hedef kumbaraları güncellendi.');
-  }, [data, updateData, showToast]);
-
-  // Update Settings (e.g. cycle start day)
-  const handleUpdateSettings = useCallback((newCycleDay: number) => {
-    const updated = {
-      ...data,
-      settings: {
-        ...data.settings,
-        cycleStartDay: newCycleDay
+    const handleFocusIn = (e: FocusEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') {
+        clearTimeout(focusTimer);
+        setIsKeyboardVisible(true);
       }
     };
-    updateData(updated);
-    showToast(`Maaş döngü günü ${newCycleDay} olarak güncellendi.`);
-  }, [data, updateData, showToast]);
 
-  // Backup Download (.json)
-  const handleDownloadBackup = useCallback(() => {
-    const dataStr = JSON.stringify(data, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Buyutec_Butce_Yedek_${currentUser || 'kullanici'}_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('Yedek JSON dosyası indirildi!');
-  }, [data, currentUser, showToast]);
+    const handleFocusOut = () => {
+      clearTimeout(focusTimer);
+      focusTimer = setTimeout(() => {
+        const activeTag = document.activeElement?.tagName;
+        if (activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+          setIsKeyboardVisible(false);
+        }
+      }, 120);
+    };
 
-  // Backup Upload (.json)
-  const handleUploadBackup = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const parsed = JSON.parse(e.target?.result as string);
-        if (parsed.months !== undefined && Array.isArray(parsed.months)) {
-          updateData({
-            ...parsed,
-            savings: Array.isArray(parsed.savings) ? parsed.savings : (data.savings || [])
-          });
-          if (parsed.months.length > 0) {
-            setCurrentMonth(parsed.months[parsed.months.length - 1]);
+    const handleViewportResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (window.visualViewport) {
+          const isShrunk = window.visualViewport.height < window.innerHeight * 0.75;
+          if (isShrunk) {
+            setIsKeyboardVisible(true);
+          } else if (document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+            setIsKeyboardVisible(false);
           }
-          showToast('Yedek başarıyla yüklendi!');
-        } else {
-          showToast('Geçersiz yedek dosyası formatı.', 'error');
         }
-      } catch {
-        showToast('Dosya okunamadı veya JSON hatalı.', 'error');
-      }
+      }, 100);
     };
-    reader.readAsText(file);
-  }, [data.savings, updateData, showToast]);
 
-  // Auth: Login
-  const handleLogin = useCallback((username: string) => {
-    setCurrentUser(username);
-    setUser(username);
-    const userData = loadUserData(username);
-    setData(userData);
-    if (userData.months.length > 0) {
-      setCurrentMonth(userData.months[userData.months.length - 1]);
-    }
-    showToast(`Hoş geldin, ${username}!`);
-  }, [showToast]);
+    window.addEventListener('focusin', handleFocusIn, { passive: true });
+    window.addEventListener('focusout', handleFocusOut, { passive: true });
+    window.visualViewport?.addEventListener('resize', handleViewportResize, { passive: true } as any);
 
-  // Auth: Logout
-  const handleLogout = useCallback(() => {
-    setCurrentUser(null);
-    setUser(null);
-    const demoData = loadUserData('demo_user');
-    setData(demoData);
-    if (demoData.months.length > 0) {
-      setCurrentMonth(demoData.months[demoData.months.length - 1]);
-    }
-    showToast('Hesaptan çıkış yapıldı.');
-  }, [showToast]);
-
-  // Clear All Data
-  const handleClearAllData = useCallback(() => {
-    if (confirm('Tüm kayıtlı bütçeler, borçlar ve HESABINIZ SİLİNECEK. Emin misiniz?')) {
-      if (currentUser) {
-        localStorage.removeItem('budgetApp_data_' + currentUser);
-        const users = JSON.parse(localStorage.getItem('budgetApp_users') || '{}');
-        delete users[currentUser];
-        localStorage.setItem('budgetApp_users', JSON.stringify(users));
-      }
-      handleLogout();
-    }
-  }, [currentUser, handleLogout]);
-
-  // Open Transaction Modal
-  const handleOpenTxModal = useCallback((
-    type: 'income' | 'expense',
-    catIndex: number,
-    itemIndex: number | null,
-    itemName: string
-  ) => {
-    setTxModal({
-      isOpen: true,
-      type,
-      catIndex,
-      itemIndex,
-      itemName
-    });
+    return () => {
+      clearTimeout(resizeTimer);
+      clearTimeout(focusTimer);
+      window.removeEventListener('focusin', handleFocusIn);
+      window.removeEventListener('focusout', handleFocusOut);
+      window.visualViewport?.removeEventListener('resize', handleViewportResize);
+    };
   }, []);
 
-  // Confirm Transaction Add
-  const handleConfirmTransaction = useCallback((amount: number, desc: string) => {
-    if (!currentMonth) return;
-    const updated = JSON.parse(JSON.stringify(currentMonth)) as MonthData;
-    const today = new Date();
-    const dateStr = `${today.getDate()}/${today.getMonth() + 1}`;
-    const newTx = {
-      id: generateId(),
-      amount,
-      desc,
-      date: dateStr
-    };
+  // Maps for O(1) lookups
+  const wordsMap = useMemo(() => {
+    const map = new Map<number, Word>();
+    allWords.forEach(w => map.set(w.id, w));
+    return map;
+  }, [allWords]);
 
-    if (txModal.type === 'income') {
-      const item = updated.incomes[txModal.catIndex];
-      item.transactions = item.transactions || [];
-      item.transactions.push(newTx);
-    } else if (txModal.itemIndex !== null) {
-      const item = updated.categories[txModal.catIndex].items[txModal.itemIndex];
-      item.transactions = item.transactions || [];
-      item.transactions.push(newTx);
+  const progressMap = useMemo(() => {
+    const map = new Map<number, Progress>();
+    allProgress.forEach(p => map.set(p.wordId, p));
+    return map;
+  }, [allProgress]);
+
+  // Load category names from words.json on mount
+  useEffect(() => {
+    const baseUrl = import.meta.env.BASE_URL.endsWith('/')
+      ? import.meta.env.BASE_URL
+      : `${import.meta.env.BASE_URL}/`;
+    fetch(`${baseUrl}words.json?v=yokdil2`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.categoryNames) {
+          setCategoryNames({ ...DEFAULT_CATEGORY_NAMES, ...data.categoryNames });
+        }
+      })
+      .catch(err => console.warn('Category names fetch error:', err));
+  }, []);
+
+  // Reload all data from IndexedDB
+  const loadData = useCallback(async () => {
+    await deduplicateDatabaseWords(db);
+    await syncYokdilCategoriesToDb(db);
+    const loadedWords = await db.words.toArray();
+    const loadedProgress = await db.progress.toArray();
+
+    const loadedSettings = (await db.settings.get(1)) || DEFAULT_SETTINGS;
+    const loadedProfile = (await db.profile.get(1)) || DEFAULT_PROFILE;
+    const loadedLogs = await db.dailyLogs.toArray();
+
+    // Check & unlock any newly qualified badges from expanded badge list
+    const learnedCnt = loadedProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCnt = loadedProgress.filter(p => p.status === 'mastered').length;
+    const syncedBadges = checkUnlockedBadges({
+      currentBadges: loadedProfile.unlockedBadges || [],
+      totalLearned: learnedCnt,
+      streak: loadedProfile.streak,
+      speedScore: loadedProfile.highScoreSpeedRound,
+      masteredCount: masteredCnt,
+      comboCount: loadedProfile.maxCombo || 0,
+      hasCustomWord: loadedWords.some(w => !!w.isCustom),
+      highScoreSnake: loadedProfile.highScoreSnake || 0,
+      totalSnakeWords: loadedProfile.totalSnakeWords || 0,
+      secretWordPuzzlesSolved: loadedProfile.secretWordPuzzlesSolved || 0,
+      secretWordNoHintSolves: loadedProfile.secretWordNoHintSolves || 0
+    });
+    if (syncedBadges.length !== (loadedProfile.unlockedBadges?.length || 0)) {
+      loadedProfile.unlockedBadges = syncedBadges;
+      await db.profile.put(loadedProfile);
     }
 
-    setCurrentMonth(updated);
-    showToast(`${txModal.itemName} için ${formatMoney(amount)} eklendi!`);
-  }, [currentMonth, txModal, showToast]);
+    setAllWords(loadedWords);
+    setAllProgress(loadedProgress);
+    setSettings(loadedSettings);
+    setProfile(loadedProfile);
+    setDailyLogs(loadedLogs);
 
-  // Quick Add Transaction Handler
-  const handleConfirmQuickAdd = useCallback((
-    type: 'expense' | 'income',
-    catId: string,
-    itemId: string,
-    amount: number,
-    desc: string,
-    dateStr?: string,
-    newItemName?: string
+    const isMasterSound = loadedSettings.soundEnabled !== false;
+    sound.setPreferences(loadedSettings.soundEffects, loadedSettings.vibration, isMasterSound);
+    setSpeechEnabled(isMasterSound);
+  }, []);
+
+  // First-time database setup
+  useEffect(() => {
+    async function init() {
+      try {
+        await initializeDatabase((pct, msg) => {
+          setInitPercent(pct);
+          setInitMessage(msg);
+        });
+        await loadData();
+      } catch (err) {
+        console.error('Initialization error:', err);
+        setInitMessage(`Hata: ${(err as Error).message}`);
+      } finally {
+        setIsInitializing(false);
+      }
+    }
+    init();
+  }, [loadData]);
+
+  // Apply theme & dark mode palette
+  useEffect(() => {
+    const isDark = settings.theme === 'dark';
+    const root = document.documentElement;
+
+    if (isDark) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+
+    const palette = settings.darkPalette || 'cyber-yellow';
+    root.setAttribute('data-palette', palette);
+
+    if (palette === 'custom' && settings.customDarkColor) {
+      root.style.setProperty('--brutal-dark-accent', settings.customDarkColor);
+      root.style.setProperty('--brutal-dark-shadow', settings.customDarkColor);
+    } else {
+      root.style.removeProperty('--brutal-dark-accent');
+      root.style.removeProperty('--brutal-dark-shadow');
+    }
+  }, [settings.theme, settings.darkPalette, settings.customDarkColor]);
+
+  const today = getEffectiveDate();
+
+  // Daily queues
+  const dueQueue = useMemo(() => {
+    return selectDailyReviewQueue(
+      allProgress,
+      wordsMap,
+      settings.dailyReviewLimit,
+      settings.prioritizeCustomWords,
+      today
+    );
+  }, [allProgress, wordsMap, settings.dailyReviewLimit, settings.prioritizeCustomWords, today]);
+
+  const newWordsQueue = useMemo(() => {
+    const existingIds = new Set(allProgress.map(p => p.wordId));
+    return selectDailyNewWordsQueue(
+      allWords,
+      existingIds,
+      settings.enabledCategories,
+      Math.max(100, settings.dailyNewTarget * 5),
+      settings.prioritizeCustomWords
+    );
+  }, [allWords, allProgress, settings.enabledCategories, settings.dailyNewTarget, settings.prioritizeCustomWords]);
+
+  // Today log
+  const todayLog = useMemo(() => {
+    return dailyLogs.find(l => l.date === today) || {
+      date: today,
+      correctCount: 0,
+      wrongCount: 0,
+      newLearnedCount: 0,
+      reviewsDone: 0,
+      xpEarned: 0
+    };
+  }, [dailyLogs, today]);
+
+  // Streak & Active Day maintenance with Streak Freeze protection
+  const updateStreakAndActivity = async (currentProf: UserProfile, dateStr: string): Promise<UserProfile> => {
+    let newStreak = currentProf.streak;
+    let freezes = currentProf.streakFreezes || 0;
+    let frozenDates = [...(currentProf.frozenDates || [])];
+
+    if (!currentProf.lastActiveDate) {
+      newStreak = 1;
+    } else if (currentProf.lastActiveDate !== dateStr) {
+      const diff = daysBetween(currentProf.lastActiveDate, dateStr);
+      if (diff === 1) {
+        newStreak += 1;
+      } else if (diff > 1) {
+        // Missed (diff - 1) days
+        const missedDays = diff - 1;
+        if (freezes > 0 && missedDays <= freezes) {
+          // Protected by streak freeze!
+          freezes -= missedDays;
+          for (let i = 1; i <= missedDays; i++) {
+            frozenDates.push(addDays(currentProf.lastActiveDate, i));
+          }
+          newStreak += 1; // Streak preserved and continued!
+        } else {
+          newStreak = 1;
+        }
+      }
+    }
+
+    const updated: UserProfile = {
+      ...currentProf,
+      streak: newStreak,
+      lastActiveDate: dateStr,
+      streakFreezes: freezes,
+      frozenDates: frozenDates
+    };
+    return updated;
+  };
+
+  // 5 consecutive days completed = 1 Streak Freeze (Max 2)
+  const handleSessionCompleted = async (): Promise<{ earnedFreeze: boolean }> => {
+    let earnedFreeze = false;
+    let consecutive = profile.consecutiveCompletedDays || 0;
+    let freezes = profile.streakFreezes || 0;
+
+    if (profile.lastCompletedDate !== today) {
+      if (!profile.lastCompletedDate) {
+        consecutive = 1;
+      } else {
+        const diff = daysBetween(profile.lastCompletedDate, today);
+        if (diff === 1) {
+          consecutive += 1;
+        } else if (diff === 2 && profile.frozenDates?.includes(addDays(profile.lastCompletedDate, 1))) {
+          consecutive += 1;
+        } else {
+          consecutive = 1;
+        }
+      }
+
+      if (consecutive >= 5) {
+        if (freezes < 2) {
+          freezes += 1;
+          earnedFreeze = true;
+        }
+        consecutive = 0; // Reset counter for next 5-day cycle
+      }
+
+      const updatedProf: UserProfile = {
+        ...profile,
+        lastCompletedDate: today,
+        consecutiveCompletedDays: consecutive,
+        streakFreezes: Math.min(2, freezes) // Strictly maximum 2
+      };
+
+      await db.profile.put(updatedProf);
+      setProfile(updatedProf);
+    }
+
+    return { earnedFreeze };
+  };
+
+  // Check and unlock badges
+  const checkBadges = (
+    currentProf: UserProfile,
+    totalLearned: number,
+    streak: number,
+    isCustomWordCreated: boolean = false,
+    speedScore?: number,
+    masteredCount?: number,
+    comboCount?: number,
+    gameStats?: {
+      highScoreSnake?: number;
+      totalSnakeWords?: number;
+      secretWordPuzzlesSolved?: number;
+      secretWordNoHintSolves?: number;
+    }
+  ): string[] => {
+    return checkUnlockedBadges({
+      currentBadges: currentProf.unlockedBadges || [],
+      totalLearned,
+      streak,
+      speedScore: speedScore ?? currentProf.highScoreSpeedRound,
+      masteredCount,
+      comboCount: Math.max(comboCount || 0, currentProf.maxCombo || 0),
+      hasCustomWord: isCustomWordCreated || allWords.some(w => !!w.isCustom),
+      highScoreSnake: gameStats?.highScoreSnake ?? currentProf.highScoreSnake ?? 0,
+      totalSnakeWords: gameStats?.totalSnakeWords ?? currentProf.totalSnakeWords ?? 0,
+      secretWordPuzzlesSolved: gameStats?.secretWordPuzzlesSolved ?? currentProf.secretWordPuzzlesSolved ?? 0,
+      secretWordNoHintSolves: gameStats?.secretWordNoHintSolves ?? currentProf.secretWordNoHintSolves ?? 0
+    });
+  };
+
+  // Real-time combo update to track highest combo and unlock combo badges immediately
+  const handleComboUpdate = async (currentCombo: number) => {
+    const prevMax = profile.maxCombo || 0;
+    // Only touch the DB on badge milestones / every 5th: a write per tap re-renders the whole app
+    if (currentCombo <= prevMax || currentCombo % 5 !== 0) return;
+    const nextMax = currentCombo;
+    const learnedCnt = allProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCnt = allProgress.filter(p => p.status === 'mastered').length;
+    const newBadges = checkBadges(
+      profile,
+      learnedCnt,
+      profile.streak,
+      false,
+      profile.highScoreSpeedRound,
+      masteredCnt,
+      nextMax
+    );
+
+    const hasNewBadge = newBadges.length > (profile.unlockedBadges?.length || 0);
+    if (nextMax > prevMax || hasNewBadge) {
+      if (hasNewBadge) {
+        sound.playLevelUp();
+      }
+      const updatedProf: UserProfile = {
+        ...profile,
+        maxCombo: nextMax,
+        unlockedBadges: newBadges
+      };
+      await db.profile.put(updatedProf);
+      setProfile(updatedProf);
+    }
+  };
+
+  // Add XP, check level up & record logs
+  const recordAnswerResult = async (
+    isCorrect: boolean,
+    isNewLearned: boolean = false,
+    comboCount: number = 1,
+    isMastered: boolean = false,
+    isReview: boolean = false
   ) => {
-    let targetMonth = currentMonth;
-    if (!targetMonth) {
-      const today = new Date();
-      const mId = `${today.getFullYear()}-${today.getMonth()}`;
-      targetMonth = data.months.find(m => m.id === mId) || data.months[data.months.length - 1];
+    const xpGain = isCorrect ? Math.round(10 * getComboMultiplier(comboCount)) : 0;
+    const nextXp = profile.xp + xpGain;
+    const prevLevel = profile.level;
+    const nextLevel = calculateLevel(nextXp);
+
+    if (nextLevel > prevLevel) {
+      sound.playLevelUp();
+      fireLevelUp();
     }
-    if (!targetMonth) return;
 
-    const updatedMonth = JSON.parse(JSON.stringify(targetMonth)) as MonthData;
-    const today = new Date();
-    const txDate = dateStr || `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}`;
-    let loggedItemName = '';
+    // Update profile
+    let updatedProf = await updateStreakAndActivity(profile, today);
+    const learnedCount = allProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCountTotal = allProgress.filter(p => p.status === 'mastered').length + (isMastered ? 1 : 0);
+    const nextMaxCombo = Math.max(profile.maxCombo || 0, comboCount);
+    const newBadges = checkBadges(
+      updatedProf,
+      learnedCount + (isNewLearned ? 1 : 0),
+      updatedProf.streak,
+      false,
+      updatedProf.highScoreSpeedRound,
+      masteredCountTotal,
+      nextMaxCombo
+    );
 
-    const newTx = {
-      id: generateId(),
-      amount,
-      desc: desc.trim() || (type === 'expense' ? 'Hızlı Harcama' : 'Hızlı Gelir'),
-      date: txDate,
-      timestamp: Date.now()
+    updatedProf = {
+      ...updatedProf,
+      xp: nextXp,
+      level: nextLevel,
+      maxCombo: nextMaxCombo,
+      unlockedBadges: newBadges
+    };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+
+    // Update Daily Log
+    const currentLog: DailyLog = (await db.dailyLogs.get(today)) || {
+      date: today,
+      correctCount: 0,
+      wrongCount: 0,
+      newLearnedCount: 0,
+      reviewsDone: 0,
+      masteredCount: 0,
+      xpEarned: 0
     };
 
-    if (type === 'income') {
-      let incomeItem = updatedMonth.incomes.find(i => i.id === itemId);
-      if (!incomeItem && newItemName) {
-        incomeItem = {
-          id: generateId(),
-          name: newItemName,
-          amount: 0,
-          transactions: []
-        };
-        updatedMonth.incomes.push(incomeItem);
-      }
-      if (incomeItem) {
-        loggedItemName = incomeItem.name;
-        incomeItem.transactions = incomeItem.transactions || [];
-        incomeItem.transactions.push(newTx);
-        incomeItem.amount = incomeItem.transactions.reduce((acc, t) => acc + t.amount, 0);
-      }
-    } else {
-      const category = updatedMonth.categories.find(c => c.id === catId);
-      if (category) {
-        let catItem = category.items.find(i => i.id === itemId);
-        if (!catItem && newItemName) {
-          catItem = {
-            id: generateId(),
-            name: newItemName,
-            amount: 0,
-            transactions: [],
-            sliderLocked: false
-          };
-          category.items.push(catItem);
-        }
-        if (catItem) {
-          loggedItemName = catItem.name;
-          catItem.transactions = catItem.transactions || [];
-          catItem.transactions.push(newTx);
-          catItem.amount = catItem.transactions.reduce((acc, t) => acc + t.amount, 0);
-        }
-      }
-    }
+    const nextLog: DailyLog = {
+      ...currentLog,
+      correctCount: isCorrect ? currentLog.correctCount + 1 : currentLog.correctCount,
+      wrongCount: !isCorrect ? currentLog.wrongCount + 1 : currentLog.wrongCount,
+      newLearnedCount: isNewLearned ? currentLog.newLearnedCount + 1 : currentLog.newLearnedCount,
+      reviewsDone: isReview ? currentLog.reviewsDone + 1 : currentLog.reviewsDone,
+      masteredCount: (currentLog.masteredCount || 0) + (isMastered ? 1 : 0),
+      xpEarned: currentLog.xpEarned + xpGain
+    };
 
-    // Recompute total income, expense and remaining for this month
-    let totInc = 0;
-    updatedMonth.incomes.forEach(i => {
-      const sum = i.transactions ? i.transactions.reduce((acc, t) => acc + t.amount, 0) : 0;
-      i.amount = sum;
-      totInc += sum;
+    await db.dailyLogs.put(nextLog);
+    setDailyLogs(prev => {
+      const idx = prev.findIndex(l => l.date === today);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = nextLog;
+        return copy;
+      }
+      return [...prev, nextLog];
+    });
+  };
+
+  // Handle Learn mode word completion (passed both multiple choice and typing)
+  const handleLearnWordComplete = async (word: Word, isCorrect: boolean, comboCount: number = 1) => {
+    const existingProg = await db.progress.get(word.id);
+    const isMastered = existingProg?.status === 'mastered';
+    const hasStep = (existingProg?.step || 0) > 0;
+
+    // Preserve step/streakDays if word was already mastered or step > 0
+    const preservedStep = (isMastered || hasStep) ? existingProg!.step : 0;
+    const preservedStreak = (isMastered || hasStep)
+      ? existingProg!.streakDays + (isCorrect ? 1 : 0)
+      : (isCorrect ? 1 : 0);
+    const preservedStatus = isMastered ? 'mastered' : 'learning';
+    const preservedDueDate = isMastered
+      ? (existingProg?.dueDate || addDays(today, 60))
+      : today;
+
+    const nextProgress: Progress = {
+      wordId: word.id,
+      step: preservedStep,
+      streakDays: preservedStreak,
+      dueDate: preservedDueDate,
+      lastReviewDate: today,
+      status: preservedStatus,
+      lapses: existingProg ? existingProg.lapses + (isCorrect ? 0 : 1) : 0,
+      totalCorrect: (existingProg?.totalCorrect || 0) + (isCorrect ? 1 : 0),
+      totalWrong: (existingProg?.totalWrong || 0) + (isCorrect ? 0 : 1),
+      updatedAt: Date.now()
+    };
+
+    await db.progress.put(nextProgress);
+    setAllProgress(prev => {
+      const filtered = prev.filter(p => p.wordId !== word.id);
+      return [...filtered, nextProgress];
     });
 
-    let totExp = 0;
-    updatedMonth.categories.forEach(c => {
-      c.items.forEach(i => {
-        const sum = i.transactions ? i.transactions.reduce((acc, t) => acc + t.amount, 0) : 0;
-        i.amount = sum;
-        totExp += sum;
+    await recordAnswerResult(isCorrect, !existingProg, comboCount, false, false);
+  };
+
+  // Permanently mark word as known when swiped 'Biliyorum' in discovery
+  const handleMarkWordKnown = async (word: Word) => {
+    const knownProg: Progress = {
+      wordId: word.id,
+      step: 5,
+      streakDays: 5,
+      dueDate: addDays(today, 60),
+      lastReviewDate: today,
+      status: 'mastered',
+      lapses: 0,
+      totalCorrect: 1,
+      totalWrong: 0,
+      updatedAt: Date.now()
+    };
+    await db.progress.put(knownProg);
+    setAllProgress(prev => [...prev.filter(p => p.wordId !== word.id), knownProg]);
+    await recordAnswerResult(true, false, 1, true, false);
+  };
+
+  // Mark word as learning when swiped 'Bilmiyorum' in discovery
+  const handleMarkWordLearning = async (word: Word) => {
+    const existingProg = await db.progress.get(word.id);
+    const isMastered = existingProg?.status === 'mastered';
+    const hasStep = (existingProg?.step || 0) > 0;
+
+    // Preserve step/streakDays if word was already mastered or step > 0
+    const preservedStep = (isMastered || hasStep) ? existingProg!.step : 0;
+    const preservedStreak = (isMastered || hasStep) ? existingProg!.streakDays : 0;
+    const preservedStatus = isMastered ? 'mastered' : 'learning';
+
+    const learningProg: Progress = {
+      wordId: word.id,
+      step: preservedStep,
+      streakDays: preservedStreak,
+      dueDate: today,
+      lastReviewDate: existingProg?.lastReviewDate,
+      status: preservedStatus,
+      lapses: (existingProg?.lapses || 0) + 1,
+      totalCorrect: existingProg?.totalCorrect || 0,
+      totalWrong: (existingProg?.totalWrong || 0) + 1,
+      updatedAt: Date.now()
+    };
+    await db.progress.put(learningProg);
+    setAllProgress(prev => [...prev.filter(p => p.wordId !== word.id), learningProg]);
+  };
+
+  // Handle Review mode word answer
+  const handleReviewWordAnswer = async (
+    wordId: number,
+    isCorrect: boolean,
+    isPartial: boolean,
+    lastMistake?: string,
+    comboCount: number = 1,
+    source?: 'game' | 'review'
+  ) => {
+    const existingProg = await db.progress.get(wordId);
+    const decision = decideReviewAnswer(
+      existingProg,
+      wordId,
+      isCorrect,
+      isPartial,
+      today,
+      lastMistake,
+      source
+    );
+
+    if (decision.shouldSaveProgress && decision.nextProgress) {
+      await db.progress.put(decision.nextProgress);
+      setAllProgress(prev => {
+        const filtered = prev.filter(p => p.wordId !== wordId);
+        return [...filtered, decision.nextProgress!];
       });
-    });
-
-    updatedMonth.income = totInc;
-    updatedMonth.expense = totExp;
-    updatedMonth.remaining = totInc - totExp;
-
-    const newMonths = [...data.months];
-    const existingIdx = newMonths.findIndex(m => m.id === updatedMonth.id);
-    if (existingIdx >= 0) {
-      newMonths[existingIdx] = updatedMonth;
-    } else {
-      newMonths.push(updatedMonth);
     }
 
-    updateData({
-      ...data,
-      months: newMonths
-    });
+    if (decision.shouldRecordReview) {
+      await recordAnswerResult(isCorrect, false, comboCount, decision.becameMastered, true);
+    }
+  };
 
-    setCurrentMonth(updatedMonth);
-    showToast(`${loggedItemName || 'İşlem'} için ${formatMoney(amount)} başarıyla eklendi!`);
-  }, [currentMonth, data, updateData, showToast]);
+  // Record single last mistake on a word (without bloating DB, only saves the latest one)
+  const handleRecordMistake = async (wordId: number, mistake: string) => {
+    if (!mistake) return;
+    const existingProg = await db.progress.get(wordId);
+    if (existingProg) {
+      const updated: Progress = {
+        ...existingProg,
+        lastMistake: mistake.trim(),
+        updatedAt: Date.now()
+      };
+      await db.progress.put(updated);
+      setAllProgress(prev => prev.map(p => p.wordId === wordId ? updated : p));
+    }
+  };
+
+  // Apply upsert for a resolved existing word (dictionary or custom)
+  const applyExistingWordUpsert = async (
+    targetWord: Word,
+    wordData: Omit<Word, 'id'>,
+    silent: boolean = false
+  ) => {
+    const existingProg = allProgress.find(p => p.wordId === targetWord.id);
+
+    // Merge categories with 'custom' and set isCustom: true
+    const updatedCategories = Array.from(new Set([...(targetWord.categories || []), 'custom']));
+    const updatedWord: Word = {
+      ...targetWord,
+      isCustom: true,
+      categories: updatedCategories,
+      tr: wordData.tr ? wordData.tr : targetWord.tr,
+      examples: (wordData.examples && wordData.examples.length > 0) ? wordData.examples : targetWord.examples,
+      emoji: wordData.emoji || targetWord.emoji,
+      ipa: wordData.ipa || targetWord.ipa
+    };
+
+    await db.words.put(updatedWord);
+    setAllWords(prev => prev.map(w => w.id === targetWord.id ? updatedWord : w));
+
+    // If word already has progress:
+    if (existingProg) {
+      if (existingProg.status === 'mastered') {
+        if (!silent) {
+          alert(`"${targetWord.en}" kelimesi zaten 'Öğrenilenler' (Mastered) listenizde kayıtlı! İlerlemeniz korundu.`);
+        }
+      } else {
+        if (!silent) {
+          alert(`"${targetWord.en}" kelimesi zaten listenizde kayıtlı, ilerlemeniz korundu.`);
+        }
+      }
+      return;
+    }
+
+    // Word exists in dictionary but not yet in learning progress:
+    // Create new progress record at step: 0
+    const customProgress: Progress = {
+      wordId: targetWord.id,
+      step: 0,
+      streakDays: 0,
+      dueDate: today,
+      lastReviewDate: undefined,
+      status: 'learning',
+      lapses: 0,
+      totalCorrect: 0,
+      totalWrong: 0,
+      updatedAt: Date.now()
+    };
+
+    await db.progress.put(customProgress);
+    setAllProgress(prev => [...prev.filter(p => p.wordId !== targetWord.id), customProgress]);
+
+    const updatedBadges = checkBadges(profile, allProgress.length + 1, profile.streak, true);
+    const updatedProf = { ...profile, unlockedBadges: updatedBadges };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+
+    if (!silent) {
+      alert(`"${targetWord.en}" kelimesi sözlükte bulundu ve 'Öğreniliyor' listenize eklendi!`);
+    }
+  };
+
+  // Add / Upsert custom word with 4-step matching hierarchy (upsertCustomWord)
+  const handleAddCustomWord = async (wordData: Omit<Word, 'id'>, silent: boolean = false) => {
+    const cleanEn = (wordData.en || '').trim();
+    if (!cleanEn) return;
+
+    const match = matchWordCandidate(cleanEn, wordData.tr || '', allWords, progressMap);
+
+    if (match.type === 'exact' || match.type === 'single_base' || match.type === 'resolved') {
+      await applyExistingWordUpsert(match.word, wordData, silent);
+      return;
+    }
+
+    if (match.type === 'ambiguous') {
+      // Prompt user to select which meaning was intended
+      setAmbiguousSelection({
+        wordData,
+        candidates: match.candidates,
+        silent
+      });
+      return;
+    }
+
+    // Completely new word (new_word)
+    const highestId = allWords.reduce((max, w) => Math.max(max, w.id), 0);
+    const newId = Math.max(1000001, highestId + 1);
+
+    const newWord: Word = {
+      ...wordData,
+      en: cleanEn,
+      id: newId,
+      categories: Array.from(new Set([...(wordData.categories || []), 'custom'])),
+      isCustom: true,
+      createdAt: Date.now()
+    };
+
+    await db.words.put(newWord);
+    setAllWords(prev => [newWord, ...prev]);
+
+    // Directly assign 'learning' progress record
+    const customProgress: Progress = {
+      wordId: newId,
+      step: 0,
+      streakDays: 0,
+      dueDate: today,
+      lastReviewDate: undefined,
+      status: 'learning',
+      lapses: 0,
+      totalCorrect: 0,
+      totalWrong: 0,
+      updatedAt: Date.now()
+    };
+    await db.progress.put(customProgress);
+    setAllProgress(prev => [...prev.filter(p => p.wordId !== newId), customProgress]);
+
+    // Unlock custom creator badge
+    const updatedBadges = checkBadges(profile, allProgress.length + 1, profile.streak, true);
+    const updatedProf = { ...profile, unlockedBadges: updatedBadges };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+
+    if (!silent) {
+      alert(`"${newWord.en}" kelimesi eklendi ve 'Öğreniliyor' olarak sıraya alındı!`);
+    }
+  };
+
+  // Update Custom Word
+  const handleUpdateCustomWord = async (updatedWord: Word) => {
+    await db.words.put(updatedWord);
+    setAllWords(prev => prev.map(w => w.id === updatedWord.id ? updatedWord : w));
+  };
+
+  // Delete Custom Word
+  const handleDeleteCustomWord = async (wordId: number) => {
+    const wordToDelete = allWords.find(w => w.id === wordId);
+    const wordName = wordToDelete?.en || 'Bu kelime';
+    if (!window.confirm(`"${wordName}" kelimesini silmek istediğinize emin misiniz?`)) {
+      return;
+    }
+    await db.words.delete(wordId);
+    await db.progress.delete(wordId);
+    setAllWords(prev => prev.filter(w => w.id !== wordId));
+    setAllProgress(prev => prev.filter(p => p.wordId !== wordId));
+  };
+
+  // Restore mastered word to review pool
+  const handleRestoreMasteredWord = async (wordId: number) => {
+    const existing = await db.progress.get(wordId);
+    if (!existing) return;
+
+    const restored: Progress = {
+      ...existing,
+      status: 'learning',
+      step: 0,
+      streakDays: 0,
+      dueDate: today,
+      updatedAt: Date.now()
+    };
+
+    await db.progress.put(restored);
+    setAllProgress(prev => prev.map(p => p.wordId === wordId ? restored : p));
+    alert('Kelime tekrar havuzuna geri alındı!');
+  };
+
+  // Demote a mastered (6/6) word to 5/6 (step: 4, status: 'learning') when failed in review buffer check
+  const handleDemoteMasteredWord = async (wordId: number, mistake?: string) => {
+    const existing = await db.progress.get(wordId);
+    if (!existing || existing.status !== 'mastered') return;
+
+    const demoted: Progress = {
+      ...existing,
+      status: 'learning',
+      step: 4, // 5/6 seviyesi (0-indexed step 4 -> ADIM 5/6 olarak görünür)
+      dueDate: today,
+      lastMistake: mistake ? mistake.trim() : existing.lastMistake,
+      totalWrong: (existing.totalWrong || 0) + 1,
+      lapses: (existing.lapses || 0) + 1,
+      updatedAt: Date.now()
+    };
+
+    await db.progress.put(demoted);
+    setAllProgress(prev => prev.map(p => p.wordId === wordId ? demoted : p));
+  };
+
+  // Update Settings
+  const handleUpdateSettings = async (patch: Partial<UserSettings>) => {
+    const updated = { ...settings, ...patch };
+    await db.settings.put(updated);
+    setSettings(updated);
+
+    const isMasterSound = updated.soundEnabled !== false;
+    sound.setPreferences(updated.soundEffects, updated.vibration, isMasterSound);
+    setSpeechEnabled(isMasterSound);
+  };
+
+  // Update High Score in Speed Round
+  const handleUpdateHighScore = async (score: number) => {
+    const newBest = Math.max(profile.highScoreSpeedRound || 0, score);
+    const learnedCnt = allProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCnt = allProgress.filter(p => p.status === 'mastered').length;
+    const updatedBadges = checkBadges(
+      profile,
+      learnedCnt,
+      profile.streak,
+      false,
+      newBest,
+      masteredCnt
+    );
+    const updatedProf: UserProfile = {
+      ...profile,
+      highScoreSpeedRound: newBest,
+      unlockedBadges: updatedBadges
+    };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+  };
+
+  // Handle Snake Game over
+  const handleSnakeGameOver = async (stats: { score: number; wordsCount: number }) => {
+    const newBest = Math.max(profile.highScoreSnake || 0, stats.score);
+    const newTotalWords = (profile.totalSnakeWords || 0) + stats.wordsCount;
+    const learnedCnt = allProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCnt = allProgress.filter(p => p.status === 'mastered').length;
+
+    const gameStats = {
+      highScoreSnake: newBest,
+      totalSnakeWords: newTotalWords,
+      secretWordPuzzlesSolved: profile.secretWordPuzzlesSolved || 0,
+      secretWordNoHintSolves: profile.secretWordNoHintSolves || 0
+    };
+
+    const updatedBadges = checkBadges(
+      profile,
+      learnedCnt,
+      profile.streak,
+      false,
+      undefined,
+      masteredCnt,
+      undefined,
+      gameStats
+    );
+
+    const updatedProf: UserProfile = {
+      ...profile,
+      highScoreSnake: newBest,
+      totalSnakeWords: newTotalWords,
+      unlockedBadges: updatedBadges
+    };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+  };
+
+  // Handle Secret Word puzzle solved
+  const handleSecretWordPuzzleSolved = async (stats: { isNoHint: boolean }) => {
+    const newPuzzles = (profile.secretWordPuzzlesSolved || 0) + 1;
+    const newNoHintSolves = (profile.secretWordNoHintSolves || 0) + (stats.isNoHint ? 1 : 0);
+    const learnedCnt = allProgress.filter(p => p.status === 'learning' || p.status === 'mastered').length;
+    const masteredCnt = allProgress.filter(p => p.status === 'mastered').length;
+
+    const gameStats = {
+      highScoreSnake: profile.highScoreSnake || 0,
+      totalSnakeWords: profile.totalSnakeWords || 0,
+      secretWordPuzzlesSolved: newPuzzles,
+      secretWordNoHintSolves: newNoHintSolves
+    };
+
+    const updatedBadges = checkBadges(
+      profile,
+      learnedCnt,
+      profile.streak,
+      false,
+      undefined,
+      masteredCnt,
+      undefined,
+      gameStats
+    );
+
+    const updatedProf: UserProfile = {
+      ...profile,
+      secretWordPuzzlesSolved: newPuzzles,
+      secretWordNoHintSolves: newNoHintSolves,
+      unlockedBadges: updatedBadges
+    };
+    await db.profile.put(updatedProf);
+    setProfile(updatedProf);
+  };
+
+  // Reset all progress (keep word dictionary & custom words)
+  const handleResetProgress = async () => {
+    await db.progress.clear();
+    await db.dailyLogs.clear();
+    const freshProf: UserProfile = { ...DEFAULT_PROFILE, id: 1 };
+    await db.profile.put(freshProf);
+    setProfile(freshProf);
+    setDailyLogs([]);
+    setAllProgress([]);
+    localStorage.removeItem('kelime_avi_active_learn_session');
+    localStorage.removeItem('kelime_avi_learn_unknown_basket');
+    localStorage.removeItem('kelime_avi_learn_completed_' + today);
+    localStorage.removeItem('kelime_avi_review_completed_' + today);
+    await loadData();
+    setIsSettingsOpen(false);
+    setCurrentTab('learn');
+  };
+
+  // Counts
+  const learningCount = allProgress.filter(p => p.status === 'learning').length;
+  const masteredCount = allProgress.filter(p => p.status === 'mastered').length;
+  const customWordsCount = allWords.filter(w => !!w.isCustom || w.categories?.includes('custom')).length;
+
+  const isLearnCompletedToday = useMemo(() => {
+    return (
+      localStorage.getItem('kelime_avi_learn_completed_' + today) === 'true' ||
+      (todayLog && todayLog.newLearnedCount >= settings.dailyNewTarget && todayLog.newLearnedCount > 0)
+    );
+  }, [today, todayLog, settings.dailyNewTarget]);
+
+  const isReviewCompletedToday = useMemo(() => {
+    return (
+      localStorage.getItem('kelime_avi_review_completed_' + today) === 'true' ||
+      (todayLog && todayLog.reviewsDone >= settings.dailyReviewLimit && todayLog.reviewsDone > 0)
+    );
+  }, [today, todayLog, settings.dailyReviewLimit]);
+
+  const homeNewCount = useMemo(() => {
+    let unstudied = 0;
+    for (let i = 0; i < allProgress.length; i++) {
+      const p = allProgress[i];
+      if (p.status === 'learning' && p.totalCorrect === 0 && !p.lastReviewDate) {
+        unstudied++;
+      }
+    }
+    return newWordsQueue.length + unstudied;
+  }, [newWordsQueue.length, allProgress]);
+
+  // Stable navigation callbacks for React.memo views
+  const handleStartReview = useCallback(() => setCurrentTab('review'), []);
+  const handleStartLearn = useCallback(() => setCurrentTab('learn'), []);
+  const handleStartSpeedRound = useCallback(() => setIsSpeedRoundOpen(true), []);
+  const handleStartPassaparola = useCallback(() => setIsPassaparolaOpen(true), []);
+  const handleStartSnakeGame = useCallback(() => setIsSnakeGameOpen(true), []);
+  const handleStartClozeTest = useCallback(() => setIsClozeTestOpen(true), []);
+  const handleStartYdsYokdil = useCallback(() => setIsYdsYokdilOpen(true), []);
+  const handleOpenSettings = useCallback(() => setIsSettingsOpen(true), []);
+  const handleCloseToHome = useCallback(() => setCurrentTab('home'), []);
+
+  // Loading Screen
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#FDFBF7] text-black flex flex-col items-center justify-center p-6 text-center select-none">
+        <div className="w-24 h-24 bg-[#FFE600] text-black border-4 border-black flex items-center justify-center mb-6 shadow-[6px_6px_0px_0px_#000] rotate-[-2deg]">
+          <span className="text-4xl font-black tracking-tighter">KA</span>
+        </div>
+        <h1 className="text-3xl font-black mb-1 uppercase tracking-tight text-black">KELİME AVI</h1>
+        <div className="inline-block bg-[#FF69B4] text-black border-2 border-black font-black text-xs px-2.5 py-0.5 mb-6 shadow-[2px_2px_0px_0px_#000]">
+          {initMessage}
+        </div>
+
+        {/* Brutalist Progress Bar */}
+        <div className="w-64 h-4 bg-white border-[3px] border-black overflow-hidden mb-2 shadow-[3px_3px_0px_0px_#000]">
+          <div
+            className="h-full bg-black transition-all duration-300"
+            style={{ width: `${initPercent}%` }}
+          />
+        </div>
+        <span className="text-xs font-black font-mono bg-white border border-black px-2 py-0.5 text-black">%{initPercent}</span>
+      </div>
+    );
+  }
 
   return (
-    <div
-      className={`min-h-screen w-full flex flex-col items-center justify-start ${
-        isLight ? 'bg-[#f4f6fc] text-[#14172c]' : 'bg-[#0d0f17] text-[#e2dbe6]'
-      }`}
-    >
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg shadow-2xl border flex items-center gap-2 text-xs font-mono font-bold tracking-tight ${
-              toast.type === 'error'
-                ? isLight ? 'bg-[#f72585] border-[#f72585] text-white' : 'bg-rose-600 border-rose-500 text-white'
-                : toast.type === 'info'
-                ? isLight ? 'bg-[#4361ee] border-[#4361ee] text-white' : 'bg-cyan-500 border-cyan-400 text-slate-950'
-                : isLight ? 'bg-[#7209b7] border-[#7209b7] text-white' : 'bg-emerald-500 border-emerald-400 text-slate-950'
-            }`}
-          >
-            {toast.type === 'error' ? (
-              <AlertCircle className="w-4 h-4" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4" />
-            )}
-            <span>{toast.message}</span>
-          </motion.div>
-        )}
-      </AnimatePresence>
+    <div className="min-h-screen min-h-[100dvh] bg-[#FDFBF7] text-black flex flex-col selection:bg-[#FFE600] selection:text-black">
+      {/* 7-Day Backup Reminder - Only on Home tab, never during active tests */}
+      {currentTab === 'home' && !isKeyboardVisible && !isSpeedRoundOpen && !isPassaparolaOpen && !isSnakeGameOpen && !isClozeTestOpen && !isYdsYokdilOpen && (
+        <BackupReminderBanner
+          lastBackupDate={settings.lastBackupDate}
+          onBackupCompleted={loadData}
+        />
+      )}
 
-      {/* Main Responsive Mobile App Container */}
-      <div
-        className={`w-full max-w-md min-h-screen flex flex-col justify-start relative shadow-2xl ${
-          isLight ? 'bg-[#ffffff] border-x border-[#e2e8f0]' : 'bg-[#141220] border-x border-[#2b233c]'
-        }`}
-      >
-        {/* Main Content Area - Instant Tab Switching without Lag */}
-        <main className="flex-1 px-4 pt-4 pb-24 overflow-y-auto">
-          {activeTab === 'overview' && (
-            <OverviewTab
-              data={data}
-              selectedYear={selectedYear}
-              onYearChange={delta => setSelectedYear(prev => prev + delta)}
-              onSelectMonth={openMonth}
-              onOpenDebtManager={() => setIsDebtManagerOpen(true)}
-              onOpenAuth={() => setIsAuthOpen(true)}
-              onOpenSavings={() => setActiveTab('savings')}
-              currentUser={currentUser}
-              isLight={isLight}
-              onToggleTheme={() => setIsLight(!isLight)}
-            />
-          )}
+      {/* Sticky Top Header - Hidden during active learning, review, overlays, or keyboard typing */}
+      {!isKeyboardVisible && currentTab !== 'learn' && currentTab !== 'review' && !isSpeedRoundOpen && !isPassaparolaOpen && !isSnakeGameOpen && !isClozeTestOpen && !isYdsYokdilOpen && (
+        <Header
+          profile={profile}
+          isDark={settings.theme === 'dark'}
+          onToggleTheme={() =>
+            handleUpdateSettings({ theme: settings.theme === 'dark' ? 'light' : 'dark' })
+          }
+          onOpenSpeedRound={() => setIsSpeedRoundOpen(true)}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+        />
+      )}
 
-          {activeTab === 'this-month' && currentMonth && (
-            <MonthEditorTab
-              currentMonth={currentMonth}
-              onUpdateMonth={setCurrentMonth}
-              onSaveMonth={handleSaveMonth}
-              onResetMonth={handleResetMonth}
-              onOpenPayDebt={() => setIsPayDebtOpen(true)}
-              onBackToOverview={() => setActiveTab('overview')}
-              onOpenTransactionModal={handleOpenTxModal}
-              onRestoreDebt={handleRestoreDebt}
-              cycleStartDay={data.settings.cycleStartDay || 1}
-              isLight={isLight}
-              allPreviousCategories={allPreviousCategories}
-              allPreviousIncomes={allPreviousIncomes}
-              allPreviousItems={allPreviousItems}
-            />
-          )}
+      {/* Main Container */}
+      <main className={`flex-1 max-w-md w-full mx-auto ${
+        (currentTab === 'learn' || currentTab === 'review')
+          ? 'px-2.5 sm:px-3.5 pt-1 sm:pt-2 pb-2 flex flex-col justify-start'
+          : currentTab === 'home' && !isKeyboardVisible ? 'px-3.5 pt-3 pb-24' : 'px-3.5 pt-3 pb-4'
+      }`}>
+        {/* PWA Install Banner (Tam Ekran Uygulama Olarak Yükle) */}
+        {currentTab === 'home' && !isKeyboardVisible && <InstallPromptBanner />}
 
-          {activeTab === 'savings' && (
-            <SavingsTab
-              savings={data.savings || []}
-              goalJars={data.goalJars || []}
-              cashBuffer={cashBuffer}
-              onUpdateSavings={handleUpdateSavings}
-              onUpdateGoalJars={handleUpdateGoalJars}
-              isLight={isLight}
-              onOpenAddModal={() => setIsAddSavingsOpen(true)}
-            />
-          )}
-
-          {activeTab === 'settings' && (
-            <SettingsTab
-              data={data}
-              onUpdateSettings={handleUpdateSettings}
-              onOpenRecurringModal={() => setIsRecurringOpen(true)}
-              onDownloadBackup={handleDownloadBackup}
-              onUploadBackup={handleUploadBackup}
-              onLogout={handleLogout}
-              onClearAllData={handleClearAllData}
-              currentUser={currentUser}
-              onOpenAuth={() => setIsAuthOpen(true)}
-              isLight={isLight}
-            />
-          )}
-        </main>
-
-        {/* Floating Quick Action Button (Sağ Altta Açık Mavi Artı Butonu) */}
-        {activeTab === 'overview' && (
-          <div className="fixed bottom-20 left-0 right-0 z-40 pointer-events-none flex justify-center">
-            <div className="w-full max-w-md px-4 flex justify-end pointer-events-none">
-              <motion.button
-                initial={{ scale: 0, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0, opacity: 0 }}
-                whileHover={{ scale: 1.08 }}
-                whileTap={{ scale: 0.92 }}
-                type="button"
-                onClick={() => setIsQuickAddOpen(true)}
-                className="pointer-events-auto w-14 h-14 rounded-full bg-cyan-400 hover:bg-cyan-300 text-slate-950 flex items-center justify-center shadow-[0_6px_28px_rgba(6,182,212,0.65)] border-2 border-white/80 dark:border-cyan-200/60 transition-colors group cursor-pointer"
-                title="Hızlı Giriş (+)"
-                aria-label="Hızlı İşlem Girişi"
-              >
-                <Plus className="w-7 h-7 stroke-[2.75] text-slate-950 transition-transform duration-200 group-hover:rotate-90" />
-              </motion.button>
+        {/* OVERLAYS: Settings & Speed Round */}
+        {isSettingsOpen ? (
+          <SettingsView
+            settings={settings}
+            categoryNames={categoryNames}
+            onUpdateSettings={handleUpdateSettings}
+            onReloadData={loadData}
+            onResetProgress={handleResetProgress}
+            onClose={() => setIsSettingsOpen(false)}
+          />
+        ) : isSpeedRoundOpen ? (
+          <SpeedRoundView
+            allWords={allWords}
+            highScore={profile.highScoreSpeedRound}
+            onUpdateHighScore={handleUpdateHighScore}
+            onComboUpdate={handleComboUpdate}
+            onClose={() => setIsSpeedRoundOpen(false)}
+          />
+        ) : isPassaparolaOpen ? (
+          <PassaparolaView
+            allWords={allWords}
+            progressMap={progressMap}
+            onAddXp={async (amount) => {
+              const newXp = profile.xp + amount;
+              const newLevel = calculateLevel(newXp);
+              const updatedProf = { ...profile, xp: newXp, level: newLevel };
+              await db.profile.put(updatedProf);
+              setProfile(updatedProf);
+            }}
+            onClose={() => setIsPassaparolaOpen(false)}
+          />
+        ) : isSnakeGameOpen ? (
+          <SnakeGameView
+            allWords={allWords}
+            progressMap={progressMap}
+            onAnswerWord={async (wordId, isCorrect, comboCount, userMistake) => {
+              // Typed answer without multiple choices: high quality SRS entry
+              await handleReviewWordAnswer(wordId, isCorrect, false, userMistake, comboCount, 'game');
+            }}
+            onGameOver={handleSnakeGameOver}
+            onAddXp={async (amount) => {
+              const newXp = profile.xp + amount;
+              const newLevel = calculateLevel(newXp);
+              const updatedProf = { ...profile, xp: newXp, level: newLevel };
+              await db.profile.put(updatedProf);
+              setProfile(updatedProf);
+            }}
+            onClose={() => setIsSnakeGameOpen(false)}
+          />
+        ) : isYdsYokdilOpen ? (
+          <YdsYokdilView
+            allWords={allWords}
+            onAddXp={async (amount) => {
+              const newXp = profile.xp + amount;
+              const newLevel = calculateLevel(newXp);
+              const updatedProf = { ...profile, xp: newXp, level: newLevel };
+              await db.profile.put(updatedProf);
+              setProfile(updatedProf);
+            }}
+            onComboUpdate={handleComboUpdate}
+            onAddCustomWord={handleAddCustomWord}
+            onClose={() => setIsYdsYokdilOpen(false)}
+          />
+        ) : isClozeTestOpen ? (
+          <ClozeTestView
+            dueQueue={dueQueue}
+            allWordsMap={wordsMap}
+            allWords={allWords}
+            allProgress={allProgress}
+            onReviewAnswer={handleReviewWordAnswer}
+            onAddXp={async (amount) => {
+              const newXp = profile.xp + amount;
+              const newLevel = calculateLevel(newXp);
+              const updatedProf = { ...profile, xp: newXp, level: newLevel };
+              await db.profile.put(updatedProf);
+              setProfile(updatedProf);
+            }}
+            onComboUpdate={handleComboUpdate}
+            onAddCustomWord={handleAddCustomWord}
+            onClose={() => setIsClozeTestOpen(false)}
+          />
+        ) : isSecretWordOpen ? (
+          <SecretWordView
+            allWords={allWords}
+            progressMap={progressMap}
+            onReviewAnswer={(wordId, isCorrect, isPartial) =>
+              handleReviewWordAnswer(wordId, isCorrect, isPartial, undefined, 1, 'game')
+            }
+            onPuzzleSolved={handleSecretWordPuzzleSolved}
+            onAddXp={async (amount) => {
+              const newXp = profile.xp + amount;
+              const newLevel = calculateLevel(newXp);
+              const updatedProf = { ...profile, xp: newXp, level: newLevel };
+              await db.profile.put(updatedProf);
+              setProfile(updatedProf);
+            }}
+            onClose={() => setIsSecretWordOpen(false)}
+          />
+        ) : (
+          /* TAB VIEWS (Kept mounted to preserve learning session state and active questions) */
+          <div>
+            <div
+              className={currentTab === 'home' ? 'block' : 'hidden'}
+              style={{ contentVisibility: currentTab === 'home' ? 'visible' : 'hidden' }}
+            >
+              <HomeView
+                todayCorrect={todayLog.correctCount}
+                dailyGoal={settings.dailyNewTarget}
+                dueCount={dueQueue.length}
+                newCount={homeNewCount}
+                learningCount={learningCount}
+                masteredCount={masteredCount}
+                totalWordsCount={allWords.length}
+                customWordsCount={customWordsCount}
+                profile={profile}
+                settings={settings}
+                isLearnCompletedToday={isLearnCompletedToday}
+                isReviewCompletedToday={isReviewCompletedToday}
+                onStartReview={handleStartReview}
+                onStartLearn={handleStartLearn}
+                onStartSpeedRound={handleStartSpeedRound}
+                onStartPassaparola={handleStartPassaparola}
+                onStartSnakeGame={handleStartSnakeGame}
+                onStartClozeTest={handleStartClozeTest}
+                onStartYdsYokdil={handleStartYdsYokdil}
+                onStartSecretWord={() => setIsSecretWordOpen(true)}
+                onOpenSettings={handleOpenSettings}
+              />
             </div>
+
+            <div
+              className={currentTab === 'learn' ? 'block' : 'hidden'}
+              style={{ contentVisibility: currentTab === 'learn' ? 'visible' : 'hidden' }}
+            >
+              <LearnView
+                isActive={currentTab === 'learn'}
+                wordsQueue={newWordsQueue}
+                allWordsMap={wordsMap}
+                allProgress={allProgress}
+                dailyNewTarget={settings.dailyNewTarget}
+                profile={profile}
+                dailyLogs={dailyLogs}
+                todayStr={today}
+                onCompleteWord={handleLearnWordComplete}
+                onMarkWordKnown={handleMarkWordKnown}
+                onMarkWordLearning={handleMarkWordLearning}
+                onRecordMistake={handleRecordMistake}
+                onDemoteMasteredWord={handleDemoteMasteredWord}
+                onSessionCompleted={handleSessionCompleted}
+                onComboUpdate={handleComboUpdate}
+                onClose={handleCloseToHome}
+                onRefreshBatch={loadData}
+              />
+            </div>
+
+            <div
+              className={currentTab === 'review' ? 'block' : 'hidden'}
+              style={{ contentVisibility: currentTab === 'review' ? 'visible' : 'hidden' }}
+            >
+              <ReviewView
+                isActive={currentTab === 'review'}
+                dueQueue={dueQueue}
+                allWordsMap={wordsMap}
+                allProgress={allProgress}
+                dailyReviewLimit={settings.dailyReviewLimit}
+                profile={profile}
+                dailyLogs={dailyLogs}
+                todayStr={today}
+                onReviewAnswer={handleReviewWordAnswer}
+                onRecordMistake={handleRecordMistake}
+                onDemoteMasteredWord={handleDemoteMasteredWord}
+                onSessionCompleted={handleSessionCompleted}
+                onComboUpdate={handleComboUpdate}
+                onClose={handleCloseToHome}
+                onRefreshDue={loadData}
+              />
+            </div>
+
+            {currentTab === 'words' && (
+              <WordListView
+                allWords={allWords}
+                progressMap={progressMap}
+                onAddCustomWord={handleAddCustomWord}
+                onUpdateCustomWord={handleUpdateCustomWord}
+                onDeleteCustomWord={handleDeleteCustomWord}
+                onRestoreMasteredWord={handleRestoreMasteredWord}
+              />
+            )}
+
+            {currentTab === 'stats' && (
+              <StatsView
+                profile={profile}
+                dailyLogs={dailyLogs}
+                totalLearned={learningCount}
+                totalMastered={masteredCount}
+                allProgress={allProgress}
+              />
+            )}
           </div>
         )}
+      </main>
 
-        {/* Bottom Navigation */}
-        <BottomNav
-          activeTab={activeTab}
-          onTabChange={tab => {
-            if (tab === 'this-month' && !currentMonth) {
-              const today = new Date();
-              openMonth(today.getFullYear(), today.getMonth());
-            } else {
-              setActiveTab(tab);
-            }
+      {/* Fixed Bottom Navigation - Hidden during active learning, review, passaparola, snake game, cloze test, or keyboard typing */}
+      {!isSettingsOpen && !isSpeedRoundOpen && !isPassaparolaOpen && !isSnakeGameOpen && !isClozeTestOpen && !isKeyboardVisible && currentTab !== 'learn' && currentTab !== 'review' && (
+        <Navbar
+          currentTab={currentTab}
+          onTabChange={(tab) => {
+            setIsSettingsOpen(false);
+            setIsYdsYokdilOpen(false);
+            setIsSpeedRoundOpen(false);
+            setIsPassaparolaOpen(false);
+            setIsSnakeGameOpen(false);
+            setIsClozeTestOpen(false);
+            setCurrentTab(tab);
           }}
-          isLight={isLight}
-          hasOutdatedSavings={hasOutdatedSavings}
+          dueCount={dueQueue.length}
+          newCount={newWordsQueue.length}
         />
-      </div>
+      )}
 
-      {/* Modals & Dialogs */}
-      <QuickAddModal
-        isOpen={isQuickAddOpen}
-        onClose={() => setIsQuickAddOpen(false)}
-        currentMonth={currentMonth}
-        onConfirm={handleConfirmQuickAdd}
-        isLight={isLight}
-      />
+      {/* Ambiguous Word Selection Modal */}
+      {ambiguousSelection && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-white border-4 border-black w-full max-w-sm p-5 space-y-4 shadow-[8px_8px_0px_0px_#000] text-black animate-scaleUp">
+            <div className="border-b-2 border-black pb-2">
+              <h3 className="text-base font-black uppercase tracking-tight">KELİME SEÇİMİ</h3>
+              <p className="text-xs font-bold text-zinc-600 mt-0.5">
+                "{ambiguousSelection.wordData.en}" için birden fazla kayıt bulundu. Hangisini kastettin?
+              </p>
+            </div>
 
-      <TransactionModal
-        isOpen={txModal.isOpen}
-        onClose={() => setTxModal(prev => ({ ...prev, isOpen: false }))}
-        title={txModal.itemName}
-        onConfirm={handleConfirmTransaction}
-        isLight={isLight}
-      />
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              {ambiguousSelection.candidates.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => {
+                    const chosen = c;
+                    const data = ambiguousSelection.wordData;
+                    const silent = ambiguousSelection.silent;
+                    setAmbiguousSelection(null);
+                    applyExistingWordUpsert(chosen, data, silent);
+                  }}
+                  className="w-full text-left p-3 border-2 border-black font-extrabold text-xs bg-[#FDFBF7] hover:bg-[#FFE600] active:translate-x-0.5 active:translate-y-0.5 transition-all shadow-[2px_2px_0px_0px_#000]"
+                >
+                  <span className="font-black text-sm block">{c.en}</span>
+                  <span className="text-zinc-700 block truncate">{c.tr}</span>
+                </button>
+              ))}
+            </div>
 
-      <DebtManagerModal
-        isOpen={isDebtManagerOpen}
-        onClose={() => setIsDebtManagerOpen(false)}
-        debts={data.debts}
-        onAddDebt={handleAddDebt}
-        onDeleteDebt={handleDeleteDebt}
-        isLight={isLight}
-      />
-
-      <PayDebtModal
-        isOpen={isPayDebtOpen}
-        onClose={() => setIsPayDebtOpen(false)}
-        debts={data.debts}
-        onConfirmPay={handleConfirmPayDebt}
-        isLight={isLight}
-      />
-
-      <RecurringManagerModal
-        isOpen={isRecurringOpen}
-        onClose={() => setIsRecurringOpen(false)}
-        recurring={data.recurring}
-        onAddRecurring={handleAddRecurring}
-        onDeleteRecurring={handleDeleteRecurring}
-        isLight={isLight}
-      />
-
-      <AddSavingsModal
-        isOpen={isAddSavingsOpen}
-        onClose={() => setIsAddSavingsOpen(false)}
-        onAdd={handleAddSavings}
-        isLight={isLight}
-      />
-
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        currentUser={currentUser}
-        onLogin={handleLogin}
-        onLogout={handleLogout}
-        isLight={isLight}
-      />
+            <button
+              type="button"
+              onClick={() => setAmbiguousSelection(null)}
+              className="w-full py-2.5 bg-zinc-200 text-black border-2 border-black font-black uppercase text-xs hover:bg-zinc-300 active:translate-x-0.5 active:translate-y-0.5"
+            >
+              VAZGEÇ
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
-}
+};
+
+export default App;

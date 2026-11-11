@@ -1,84 +1,110 @@
-export type Horizon = 'day' | 'week' | 'month' | 'year' | 'fiveYear';
-
-export type ItemStatus = 'todo' | 'in_progress' | 'done';
-
-export type Priority = 'low' | 'medium' | 'high';
-
-export interface Category {
-  id: string;
-  name: string;
-  color: string; // hex or tailwind color
-  icon?: string;
+export interface WordExample {
+  en: string;
+  tr: string;
 }
 
-export interface Item {
+export interface Word {
+  id: number;
+  en: string;
+  ipa?: string;
+  tr: string;
+  emoji?: string;
+  examples: WordExample[];
+  categories: string[];
+  isCustom?: boolean;
+  createdAt?: number;
+  reword?: {
+    stage: number;
+    lastSeen: number;
+  };
+}
+
+export type WordStatus = 'new' | 'learning' | 'mastered';
+
+export interface Progress {
+  wordId: number;
+  step: number;
+  streakDays: number;
+  dueDate: string; // YYYY-MM-DD
+  lastReviewDate?: string; // YYYY-MM-DD
+  status: WordStatus;
+  lapses: number;
+  totalCorrect: number;
+  totalWrong: number;
+  updatedAt: number;
+  lastMistake?: string; // En son yanlış cevap/sanılan kelime (hafıza şişirmemek için tek string)
+}
+export type BrutalDarkPalette =
+  | 'cyber-yellow'
+  | 'toxic-lime'
+  | 'neon-pink'
+  | 'cyan-glitch'
+  | 'ultraviolet'
+  | 'monochrome'
+  | 'custom';
+
+export interface UserSettings {
+  id: number; // 1
+  dailyNewTarget: number;
+  dailyReviewLimit: number;
+  prioritizeCustomWords: boolean;
+  enabledCategories: string[];
+  surpriseMasteredCheck: boolean;
+  soundEnabled?: boolean;
+  soundEffects: boolean;
+  vibration: boolean;
+  speechSpeed: number;
+  theme: 'dark' | 'light';
+  darkPalette?: BrutalDarkPalette;
+  customDarkColor?: string;
+  lastBackupDate?: string;
+  lastSurpriseCheckDate?: string;
+}
+
+export interface UserProfile {
+  id: number; // 1
+  xp: number;
+  level: number;
+  streak: number;
+  lastActiveDate: string;
+  unlockedBadges: string[];
+  highScoreSpeedRound: number;
+  maxCombo?: number;
+  streakFreezes?: number; // 0, 1, or maximum 2
+  frozenDates?: string[]; // list of dates saved by a freeze
+  consecutiveCompletedDays?: number; // 0-5 consecutive days toward next freeze
+  lastCompletedDate?: string; // last date user completed a daily study session
+  highScoreSnake?: number;
+  totalSnakeWords?: number;
+  secretWordPuzzlesSolved?: number;
+  secretWordNoHintSolves?: number;
+}
+
+export interface DailyLog {
+  date: string; // YYYY-MM-DD
+  correctCount: number;
+  wrongCount: number;
+  newLearnedCount: number;
+  reviewsDone: number;
+  masteredCount?: number;
+  xpEarned: number;
+}
+
+export interface BadgeDefinition {
   id: string;
   title: string;
-  description?: string;
-  horizon: Horizon;
-  
-  // Date and Time
-  startDate: string; // ISO string 'YYYY-MM-DD' or full ISO
-  endDate?: string;
-  periodKey?: string; // e.g. '2026-W45', '2026-11', '2026', '2026-2031'
-  time?: string; // 'HH:mm' e.g. '09:30'
-  
-  status: ItemStatus;
-  priority: Priority;
-  categoryId: string; // references Category
-  
-  // Hierarchy
-  parentId?: string; // ID of higher horizon item
-  
-  // Manual progress override if no children (0-100)
-  manualProgress?: number;
-  
-  // Extra metadata
-  location?: string;
-  recurrence?: 'daily' | 'weekly' | 'monthly' | 'none';
-  recurrenceGroupId?: string;
-  recurrenceDaysOfWeek?: number[]; // [0..6] (0=Sun, 1=Mon, ..., 6=Sat)
-  recurrenceDaysOfMonth?: number[]; // [1..31]
-  recurrenceEndDate?: string; // 'YYYY-MM-DD'
-  tags?: string[];
-  
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
+  description: string;
+  icon: string;
+  category?: 'words' | 'streak' | 'speed' | 'master' | 'special' | 'games';
 }
 
-export interface CalculatedItem extends Item {
-  progress: number; // 0 to 100
-  childrenCount: number;
-  completedChildrenCount: number;
-  isLeaf: boolean;
-  derivedStatus: ItemStatus;
-  children?: CalculatedItem[];
+export interface BackupData {
+  schema: number;
+  appVersion: string;
+  exportedAt: string;
+  progress: Progress[];
+  customWords: Word[];
+  settings: Partial<UserSettings>;
+  profile: Partial<UserProfile>;
+  dailyLogs: DailyLog[];
 }
-
-export interface BookQuote {
-  id: string;
-  text: string;
-  page?: number | string;
-}
-
-export interface Book {
-  id: string;
-  title: string;
-  author: string;
-  totalPages: number;
-  readPages?: number;
-  status: 'read' | 'reading' | 'to_read';
-  completedDate?: string; // 'YYYY-MM-DD'
-  startDate?: string;
-  rating?: number; // 1 to 5
-  genre?: string;
-  coverColor?: string; // hex color for spine/cover gradient
-  notes?: string;
-  quotes: BookQuote[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type ViewMode = 'today' | 'week' | 'month' | 'year' | 'fiveYear' | 'goals' | 'books';
-
